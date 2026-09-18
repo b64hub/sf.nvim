@@ -360,9 +360,12 @@ M.gen_doc = function()
     M.notify_then_error("mini.doc not installed.")
   end
 
+  -- explicit output: mini.doc otherwise derives the filename from cwd's
+  -- directory name, which breaks in a git worktree checkout (folder name
+  -- doesn't match "sf").
   require("mini.doc").generate({
     "lua/sf/init.lua",
-  })
+  }, "doc/sf.txt")
 end
 
 M.is_windows_os = function()

@@ -49,9 +49,9 @@ Test.run_current_test_with_coverage = function()
   T.run(cmd, H.save_test_coverage_locally)
 end
 
----@param cb function
+---@param cb function|nil
 ---@return nil
-Test.run_current_test = function()
+Test.run_current_test = function(cb)
   local ok_class, test_class_name = pcall(H.validateInTestClass)
   if not ok_class then
     return
@@ -75,7 +75,7 @@ Test.run_current_test = function()
     :build()
 
   U.last_tests = cmd
-  T.run(cmd)
+  T.run(cmd, cb)
 end
 
 Test.run_all_tests_in_this_file_with_coverage = function()

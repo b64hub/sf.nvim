@@ -10,6 +10,7 @@ M.check = function()
   H.check_overseer()
   H.check_windows_os()
   H.check_sf_project()
+  H.check_replay_debugger()
 end
 
 -- helper;
@@ -113,6 +114,44 @@ H.check_windows_os = function()
   if vim.fn.has("win32") == 1 or vim.fn.has("win64") == 1 then
     return vim.health.warn("Windows OS detected. Functionality not guaranteed.")
   end
+end
+
+-- Warnings only: the Apex Replay Debugger is an optional feature, and the
+-- rest of the plugin works fine without it.
+H.check_replay_debugger = function()
+  if not vim.g.sf then
+    return vim.health.warn("sf.nvim not set up yet (require('sf').setup() not called) - skipping.")
+  end
+
+  if not pcall(require, "dap") then
+    return vim.health.warn(
+      "Optional: nvim-dap not found. `:SF debug *` commands won't work. You could install `mfussenegger/nvim-dap`."
+    )
+  end
+  vim.health.ok("nvim-dap plugin found.")
+
+  local node_path = vim.g.sf.replay_debugger.node_path
+  if vim.fn.executable(node_path) ~= 1 then
+    return vim.health.warn("Optional: node executable not found: " .. node_path .. ". Required to run the Apex Replay Debugger adapter.")
+  end
+  vim.health.ok("node executable found: " .. node_path)
+
+  local adapter_path = require("sf.debug").resolve_adapter_path()
+  if not adapter_path then
+    return vim.health.warn(
+      "Optional: Apex Replay Debugger adapter not found.",
+      {
+        "Set `replay_debugger.adapter_path` in setup(), or install it:",
+        "unzip the salesforce.salesforcedx-vscode-apex-replay-debugger VSIX "
+          .. "(from Open VSX or the VS Code Marketplace) into "
+          .. vim.fn.stdpath("data")
+          .. "/sf-nvim/apex-replay-debugger/,",
+        "or install the VS Code Salesforce Extension Pack (auto-detected under ~/.vscode/extensions/).",
+        "See docs/replay-debugger-notes.md in the sf.nvim repo for details.",
+      }
+    )
+  end
+  vim.health.ok("Apex Replay Debugger adapter found: " .. adapter_path)
 end
 
 return M

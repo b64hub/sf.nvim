@@ -12,6 +12,7 @@ local Test = require("sf.test")
 local Ctags = require("sf.ctags")
 local Project = require("sf.project")
 local Sobject = require("sf.sobject")
+local Debug = require("sf.debug")
 local Sf = {}
 
 --- Before using this plugin, it's mandatory to invoke this function by "require'sf'.setup()".
@@ -240,5 +241,58 @@ Sf.create_ctags = Ctags.create
 --- Create tags file in the root path and list them by fzf plugin.
 --- When fzf is not found, the command exists with an error msg.
 Sf.create_and_list_ctags = Ctags.create_and_list
+
+-- From Debug module (Apex Replay Debugger, via nvim-dap) =====================
+
+--- Launch the Apex Replay Debugger against the current buffer, if it's a
+--- `.log`/`sflog` file.
+Sf.replay_debug_current_log = Debug.replay_current_log
+
+--- Pick a local replay log (searched via `replay_debugger.log_globs`, default:
+--- `.sfdx/tools/debug/**/*.log` and the plugin's downloaded logs folder) and
+--- launch the Apex Replay Debugger against it.
+Sf.replay_debug_local_log = Debug.replay_local_log
+
+--- Pick a log from target_org (fzf-lua), download it into
+--- `.sfdx/tools/debug/logs/` and launch the Apex Replay Debugger against it.
+Sf.replay_debug_org_log = Debug.replay_org_log
+
+--- Relaunch the Apex Replay Debugger against the most recently launched log.
+Sf.replay_debug_last_log = Debug.replay_last_log
+
+--- Clear the cached `lineBreakpointInfo` (apex_ls's mapping of valid
+--- breakpoint lines per Apex type) and fetch a fresh copy. Useful after
+--- editing a class/trigger if the automatic invalidation on save is not
+--- enough (e.g. the file was edited outside Nvim).
+Sf.refresh_debug_breakpoint_info = Debug.refresh_breakpoint_info
+
+--- Enable Apex replay-ready debug logging (ApexCode=FINEST, Visualforce=FINER)
+--- for the current user by default, for `replay_debugger.trace_flag_hours`
+--- (default 1h) or a given duration. Creates/reuses a `SFNVIM_REPLAY`
+--- DebugLevel and an active TraceFlag, via the Tooling REST API directly
+--- (one `sf org display` call, then plain `curl` — much faster than the `sf`
+--- CLI's per-invocation startup cost).
+--- Accepts a number of minutes (shorthand), or a table:
+---   { minutes = number, user = string }  -- user: username/email/Id,
+---                                        -- defaults to the org's own user
+Sf.enable_replay_debug_logging = Debug.enable_replay_logging
+
+--- Interactively pick an active user (fzf-lua, else `vim.ui.select`) and
+--- enable replay logging for them. Accepts an optional number of minutes.
+Sf.pick_user_and_enable_replay_debug_logging = Debug.pick_user_and_enable_replay_logging
+
+--- Disable replay-ready debug logging by expiring the active TraceFlag
+--- created by |Sf.enable_replay_debug_logging|. Accepts an optional
+--- username/email/Id to target a different user (defaults to the org's own
+--- user).
+Sf.disable_replay_debug_logging = Debug.disable_replay_logging
+
+--- Run the Apex test under the cursor, then download and launch the newest
+--- log produced by that run with the Apex Replay Debugger.
+Sf.run_test_and_replay_debug = Debug.run_test_and_replay
+
+--- Download the Apex Replay Debugger adapter (Open VSX) into the default
+--- auto-detect location. Requires `curl` and `unzip`.
+Sf.install_replay_debug_adapter = Debug.install_adapter
 
 return Sf

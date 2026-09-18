@@ -88,6 +88,7 @@ In addition to the features, user commands and default hotkeys are also supplied
   telescope.nvim? Because its UI is slow)
 - 🔍 (Optional) [universal ctags](https://github.com/universal-ctags/ctags) is used to enhance [Apex jump](#-enhanced-jump-to-definition-apex)
 - 🔍 (Optional) [overseer.nvim](https://github.com/stevearc/overseer.nvim) if you'd like to use the overseer integration
+- 🐛 (Optional) [nvim-dap](https://github.com/mfussenegger/nvim-dap) + a `node` executable, for the [Apex Replay Debugger](#-feature-apex-replay-debugger)
 
 ![Image 019](https://github.com/user-attachments/assets/aad0ac11-f980-423b-8332-a2b4359fb4ae)
 
@@ -221,6 +222,29 @@ require('sf').setup({
   code_sign_highlight = {
     covered = { fg = "#b7f071" }, -- set `fg = ""` to disable this sign icon
     uncovered = { fg = "#f07178" }, -- set `fg = ""` to disable this sign icon
+  },
+
+  -- Apex Replay Debugger (via nvim-dap). See "Feature: Apex Replay Debugger" below.
+  replay_debugger = {
+    -- absolute path to the salesforce apex-replay-debugger adapter's
+    -- "apexReplayDebug.js"; nil = auto-detect (stdpath data dir, then
+    -- ~/.vscode/extensions/salesforce.salesforcedx-vscode-apex-replay-debugger-*)
+    adapter_path = nil,
+    node_path = "node",
+    stop_on_entry = true,
+    -- boolean, or comma list: "all,protocol,logfile,launch,breakpoints"
+    trace = false,
+    -- ms to wait for apex_ls to answer the `debugger/lineBreakpoints` request
+    lsp_timeout = 30000,
+    -- default TraceFlag duration for `:SF debug enable` when no minutes are
+    -- given (Salesforce caps TraceFlag duration at 24h regardless).
+    trace_flag_hours = 1,
+    -- where `:SF debug local` looks for logs; "<plugin_folder>" resolves to
+    -- the plugin cache dir, everything else is relative to the project root.
+    log_globs = {
+      ".sfdx/tools/debug/**/*.log",
+      "<plugin_folder>/logs/*.log",
+    },
   },
 
 })
@@ -423,6 +447,86 @@ signs.
 🏗️ Jump to next uncovered hunk
 
 - Use `]v` and `[v` to jump to the next/previous uncovered hunk.
+
+<br>
+
+## 🐛 Feature: Apex Replay Debugger
+
+Replays an Apex debug log as a live debugging session — breakpoints,
+stepping, call stack, variables — using Salesforce's own "Apex Replay
+Debugger" adapter, driven through [nvim-dap](https://github.com/mfussenegger/nvim-dap).
+This is the Nvim equivalent of VS Code's "SFDX: Launch Apex Replay Debugger".
+
+### Setup
+
+1. Install [nvim-dap](https://github.com/mfussenegger/nvim-dap) (and optionally
+   [nvim-dap-ui](https://github.com/rcarriga/nvim-dap-ui) for variable/call-stack
+   panes — make sure it isn't gated behind `:Dap*` command lazy-loading if your
+   own keymaps call the Lua API directly instead of those commands).
+2. Install the adapter: `:SF debug installAdapter` (downloads the
+   `salesforce.salesforcedx-vscode-apex-replay-debugger` VSIX from Open VSX and
+   unzips it into `stdpath("data")/sf-nvim/apex-replay-debugger/`; requires
+   `curl` and `unzip`), or point `replay_debugger.adapter_path` at an existing
+   install (e.g. under `~/.vscode/extensions/salesforce.salesforcedx-vscode-apex-replay-debugger-*/`,
+   auto-detected if present).
+3. `:checkhealth sf` to confirm nvim-dap, `node`, and the adapter are all found.
+
+### Workflow
+
+1. `:SF debug enable` — turns on replay-ready logging (ApexCode=FINEST,
+   Visualforce=FINER) for the current org user, for `replay_debugger.trace_flag_hours`
+   (default 1h; Salesforce caps `TraceFlag` duration at 24h regardless).
+   - `:SF debug enable 120` — override the duration (minutes).
+   - `:SF debug enable 120 someone@example.com` — target a different user
+     (username, email, or Id) instead of your own — handy when debugging code
+     that a colleague or an integration user triggers.
+   - `:SF debug enableFor [minutes]` — interactively pick the user (fzf-lua,
+     else `vim.ui.select`) instead of typing their username.
+   - `:SF debug disable [user]` — expires the TraceFlag early; same optional
+     user targeting.
+   - Runs against the Tooling REST API directly (one `sf org display` call for
+     an access token, then plain `curl`) rather than five sequential `sf data`
+     CLI invocations — noticeably faster, since each `sf` CLI call pays a
+     multi-second Node startup cost that a raw HTTP request doesn't.
+2. Reproduce the behavior you want to debug (run a test, click through the UI,
+   whatever produces the log), or jump straight to step 3 with the cursor on a
+   test method.
+3. Debug it:
+   - `:SF debug test` — runs the Apex test under the cursor, then downloads
+     and launches the newest log from the org in one step.
+   - `:SF debug local` — pick from logs already on disk
+     (`.sfdx/tools/debug/**/*.log` and the plugin's downloaded-logs folder).
+   - `:SF debug org` — pick a log from the org (fzf-lua), downloads it into
+     `.sfdx/tools/debug/logs/` and launches it.
+   - `:SF debug current` — debug the `.log` file open in the current buffer.
+   - `:SF debug last` — relaunch the most recently launched log.
+4. Set breakpoints in the **Apex source file** (not the log) with nvim-dap as
+   usual (`:DapToggleBreakpoint`, or your own keymap), before or during a
+   session.
+5. `:SF debug disable` when done, to expire the TraceFlag early.
+
+`:SF debug refresh` clears and refetches the cached `apex_ls`
+`lineBreakpointInfo` (which maps valid breakpoint lines per Apex type) — this
+happens automatically whenever a `.cls`/`.trigger` file is saved, so you
+shouldn't normally need it.
+
+### Known limitations
+
+- **A breakpoint only stops if that line actually executed in the log you're
+  replaying.** A breakpoint on unexecuted code looks identical to "broken" —
+  the debugger just runs to completion. Reproduce first, then debug that
+  specific log.
+- **Generated/build-output copies of a class are excluded automatically** via
+  your project's `.forceignore` (e.g. `**/dist/**`) — without this, stepping
+  can resolve into a duplicate build copy instead of your real source, since
+  `apex_ls` indexes those regardless of `.forceignore` and the adapter's
+  typeref→file mapping is last-one-wins. If breakpoints still don't verify,
+  double check `.forceignore` covers wherever the duplicate lives.
+- **Checkpoints / heap dumps** and the **live/interactive Apex Debugger**
+  (a different, paid-feature adapter) are out of scope.
+- The log must come from code matching your local files — if they've
+  diverged, stepping can land on the wrong line; this is inherent to replay
+  debugging, not fixable on our end.
 
 <br>
 

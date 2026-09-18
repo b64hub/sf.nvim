@@ -40,6 +40,31 @@ local sobject_impl = function(sub_cmd, arg, extra)
   func()
 end
 
+local debug_impl = function(sub_cmd, arg, extra, extra2)
+  local func = vim.tbl_get(M.sub_cmd_tbl, sub_cmd, "funcs", arg)
+  if not func then
+    return U.show_err(string.format("'%s %s' is not a valid command", sub_cmd, arg))
+  end
+  if arg == "enable" then
+    local minutes = extra and tonumber(extra) or nil
+    if extra and not minutes then
+      return U.show_err("Invalid minutes: " .. extra)
+    end
+    return func({ minutes = minutes, user = extra2 })
+  end
+  if arg == "disable" then
+    return func(extra)
+  end
+  if arg == "enableFor" then
+    local minutes = extra and tonumber(extra) or nil
+    if extra and not minutes then
+      return U.show_err("Invalid minutes: " .. extra)
+    end
+    return func(minutes)
+  end
+  func()
+end
+
 ---@type table<string, {impl: fun(sub_cmd: string, arg: string): any, complete: fun(subcmd_arg_lead: string): string[], funcs: table<string, fun(...): any>}>
 M.sub_cmd_tbl = {
   currentFile = {
@@ -125,6 +150,24 @@ M.sub_cmd_tbl = {
       return common_complete("create", subcmd_arg_lead)
     end,
   },
+  debug = {
+    funcs = {
+      current = Sf.replay_debug_current_log,
+      ["local"] = Sf.replay_debug_local_log,
+      org = Sf.replay_debug_org_log,
+      last = Sf.replay_debug_last_log,
+      refresh = Sf.refresh_debug_breakpoint_info,
+      enable = Sf.enable_replay_debug_logging,
+      disable = Sf.disable_replay_debug_logging,
+      test = Sf.run_test_and_replay_debug,
+      installAdapter = Sf.install_replay_debug_adapter,
+      enableFor = Sf.pick_user_and_enable_replay_debug_logging,
+    },
+    impl = debug_impl,
+    complete = function(subcmd_arg_lead)
+      return common_complete("debug", subcmd_arg_lead)
+    end,
+  },
   sobject = {
     funcs = {
       refresh = Sf.refresh_sobjects,
@@ -153,7 +196,7 @@ local create_sf_cmd = function(opts)
     return U.show_err("unknown command: " .. sub_cmd)
   end
 
-  matched_sub_cmd.impl(fargs[1], fargs[2], fargs[3])
+  matched_sub_cmd.impl(fargs[1], fargs[2], fargs[3], fargs[4])
 end
 
 -- Registered at setup() so `:SF` outside a Salesforce project explains itself

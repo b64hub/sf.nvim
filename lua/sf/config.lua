@@ -79,6 +79,30 @@ local default_cfg = {
   -- running all local tests still defaults to 180 mins, as it is a costly operation
   sf_wait_time = 5,
 
+  -- Apex Replay Debugger (via nvim-dap). See `doc/sf.txt` / README for setup.
+  replay_debugger = {
+    -- absolute path to the salesforce apex-replay-debugger adapter's
+    -- "apexReplayDebug.js"; nil = auto-detect (stdpath data dir, then
+    -- ~/.vscode/extensions/salesforce.salesforcedx-vscode-apex-replay-debugger-*)
+    adapter_path = nil,
+    node_path = "node",
+    stop_on_entry = true,
+    -- boolean, or comma list: "all,protocol,logfile,launch,breakpoints"
+    trace = false,
+    -- ms to wait for apex_ls to answer the `debugger/lineBreakpoints` request
+    lsp_timeout = 30000,
+    -- default TraceFlag duration for `:SF debug enable` when no minutes are
+    -- given (Salesforce caps TraceFlag duration at 24h regardless).
+    trace_flag_hours = 1,
+    -- where `replay_debug_local_log` looks for logs: entries starting with "/"
+    -- are absolute, "<plugin_folder>" resolves to the plugin cache dir,
+    -- anything else is relative to the sf project root.
+    log_globs = {
+      ".sfdx/tools/debug/**/*.log",
+      "<plugin_folder>/logs/*.log",
+    },
+  },
+
 }
 
 local apply_config = function(opt)
@@ -116,6 +140,8 @@ local init = function()
   end
 
   require("sf.test").setup_sign()
+
+  require("sf.debug").setup_dap()
 end
 
 Cfg.setup = function(opt)
