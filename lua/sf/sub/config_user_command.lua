@@ -40,6 +40,8 @@ local sobject_impl = function(sub_cmd, arg, extra)
   func()
 end
 
+local debug_impl = common_impl
+
 ---@type table<string, {impl: fun(sub_cmd: string, arg: string): any, complete: fun(subcmd_arg_lead: string): string[], funcs: table<string, fun(...): any>}>
 M.sub_cmd_tbl = {
   currentFile = {
@@ -123,6 +125,19 @@ M.sub_cmd_tbl = {
     impl = common_impl,
     complete = function(subcmd_arg_lead)
       return common_complete("create", subcmd_arg_lead)
+    end,
+  },
+  debug = {
+    funcs = {
+      current = Sf.replay_debug_current_log,
+      ["local"] = Sf.replay_debug_local_log,
+      org = Sf.replay_debug_org_log,
+      last = Sf.replay_debug_last_log,
+      refresh = Sf.refresh_debug_breakpoint_info,
+    },
+    impl = debug_impl,
+    complete = function(subcmd_arg_lead)
+      return common_complete("debug", subcmd_arg_lead)
     end,
   },
   sobject = {

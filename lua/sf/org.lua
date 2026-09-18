@@ -39,12 +39,53 @@ function Org.open_current_file()
 end
 
 function Org.pull_log()
-  H.pull_log()
+  H.pick_org_log(U.get_plugin_folder_path() .. "logs/", function(path)
+    U.try_open_file(path)
+  end)
+end
+
+--- Pick a log from the org's log list (fzf-lua) and download it into `dir`.
+--- Reused by the replay debugger to download into the sfdx-conventional
+--- `.sfdx/tools/debug/logs/` folder instead.
+---@param dir string absolute directory to download the log into (created if missing)
+---@param on_done fun(path: string) called with the downloaded log's local path
+function Org.pick_log(dir, on_done)
+  H.pick_org_log(dir, on_done)
+end
+
+--- Download a single log by Id into `dir` (created if missing).
+--- @param log_id string
+--- @param dir string
+--- @param on_done fun(path: string)
+function Org.download_log(log_id, dir, on_done)
+  H.download_log(log_id, dir, on_done)
 end
 
 -- helpers;
 
-H.pull_log = function()
+---@param log_id string
+---@param dir string
+---@param on_done fun(path: string)
+H.download_log = function(log_id, dir, on_done)
+  if vim.fn.isdirectory(dir) == 0 then
+    vim.fn.mkdir(dir, "-p")
+  end
+  U.show("Downloading log...")
+  local get_cmd = B:new()
+      :cmd("apex")
+      :act("get")
+      :subact("log")
+      :addParams("-i", log_id)
+      :addParams("-d", dir)
+      :buildAsTable()
+  U.silent_system_call(get_cmd, nil, "Failed to get logs from org", function()
+    on_done(dir .. log_id .. ".log")
+  end)
+end
+
+---@param dir string
+---@param on_done fun(path: string)
+H.pick_org_log = function(dir, on_done)
   if U.is_empty_str(U.target_org) then
     return U.show_err("Target_org empty!")
   end
@@ -102,17 +143,7 @@ H.pull_log = function()
       actions = {
         ["default"] = function(selected)
           log_id = logs[selected[1]]["Id"]
-          U.show("Downloading log...")
-          local get_cmd = B:new()
-              :cmd("apex")
-              :act("get")
-              :subact("log")
-              :addParams("-i", log_id)
-              :addParams("-d", U.get_plugin_folder_path() .. "logs/")
-              :buildAsTable()
-          U.silent_system_call(get_cmd, nil, "Failed to get logs from org", function()
-            U.try_open_file(U.get_plugin_folder_path() .. "logs/" .. log_id .. ".log")
-          end)
+          H.download_log(log_id, dir, on_done)
         end,
       },
     })

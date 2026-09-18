@@ -12,6 +12,7 @@ local Test = require("sf.test")
 local Ctags = require("sf.ctags")
 local Project = require("sf.project")
 local Sobject = require("sf.sobject")
+local Debug = require("sf.debug")
 local Sf = {}
 
 --- Before using this plugin, it's mandatory to invoke this function by "require'sf'.setup()".
@@ -240,5 +241,29 @@ Sf.create_ctags = Ctags.create
 --- Create tags file in the root path and list them by fzf plugin.
 --- When fzf is not found, the command exists with an error msg.
 Sf.create_and_list_ctags = Ctags.create_and_list
+
+-- From Debug module (Apex Replay Debugger, via nvim-dap) =====================
+
+--- Launch the Apex Replay Debugger against the current buffer, if it's a
+--- `.log`/`sflog` file.
+Sf.replay_debug_current_log = Debug.replay_current_log
+
+--- Pick a local replay log (searched via `replay_debugger.log_globs`, default:
+--- `.sfdx/tools/debug/**/*.log` and the plugin's downloaded logs folder) and
+--- launch the Apex Replay Debugger against it.
+Sf.replay_debug_local_log = Debug.replay_local_log
+
+--- Pick a log from target_org (fzf-lua), download it into
+--- `.sfdx/tools/debug/logs/` and launch the Apex Replay Debugger against it.
+Sf.replay_debug_org_log = Debug.replay_org_log
+
+--- Relaunch the Apex Replay Debugger against the most recently launched log.
+Sf.replay_debug_last_log = Debug.replay_last_log
+
+--- Clear the cached `lineBreakpointInfo` (apex_ls's mapping of valid
+--- breakpoint lines per Apex type) and fetch a fresh copy. Useful after
+--- editing a class/trigger if the automatic invalidation on save is not
+--- enough (e.g. the file was edited outside Nvim).
+Sf.refresh_debug_breakpoint_info = Debug.refresh_breakpoint_info
 
 return Sf

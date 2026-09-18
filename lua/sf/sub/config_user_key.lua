@@ -23,6 +23,13 @@ M.set_default_hotkeys = function()
   nmap("<leader>ft", Sf.create_and_list_ctags, "fzf list updated ctags")
   nmap("<leader>so", Sf.org_open, "open target_org")
 
+  -- Apex Replay Debugger (nvim-dap); see docs/replay-debugger-notes.md
+  nmap("<leader>slc", Sf.replay_debug_current_log, "replay debug: current log")
+  nmap("<leader>sll", Sf.replay_debug_local_log, "replay debug: pick local log")
+  nmap("<leader>slo", Sf.replay_debug_org_log, "replay debug: pick org log")
+  nmap("<leader>slr", Sf.replay_debug_last_log, "replay debug: last log")
+  nmap("<leader>slb", Sf.refresh_debug_breakpoint_info, "replay debug: refresh breakpoint info")
+
 
   vim.keymap.set("v", "<leader>sa", function()
     Sf.run_anonymous_stdin(true)
