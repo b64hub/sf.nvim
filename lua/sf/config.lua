@@ -91,6 +91,9 @@ local default_cfg = {
     trace = false,
     -- ms to wait for apex_ls to answer the `debugger/lineBreakpoints` request
     lsp_timeout = 30000,
+    -- default TraceFlag duration for `:SF debug enable` when no minutes are
+    -- given (Salesforce caps TraceFlag duration at 24h regardless).
+    trace_flag_hours = 1,
     -- where `replay_debug_local_log` looks for logs: entries starting with "/"
     -- are absolute, "<plugin_folder>" resolves to the plugin cache dir,
     -- anything else is relative to the sf project root.

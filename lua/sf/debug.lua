@@ -5,9 +5,12 @@
 -- docs/replay-debugger-notes.md).
 
 local U = require("sf.util")
+local B = require("sf.sub.cmd_builder")
 
 local Debug = {}
 local H = {}
+
+local DEBUG_LEVEL_NAME = "SFNVIM_REPLAY"
 
 --- @return table
 local function cfg()
@@ -401,6 +404,435 @@ Debug.refresh_breakpoint_info = function()
       return U.show_err("sf.nvim: " .. err)
     end
     U.show(string.format("sf.nvim: breakpoint info refreshed (%d types)", #info))
+  end)
+end
+
+--- @param cmd table
+--- @param err_msg string
+--- @param cb fun(result: table|nil, err: string|nil)
+H.tooling_call = function(cmd, err_msg, cb)
+  U.silent_system_call(cmd, nil, err_msg, function(obj)
+    local ok, decoded = pcall(vim.json.decode, obj.stdout)
+    if not ok or not decoded then
+      return cb(nil, err_msg .. ": could not parse response")
+    end
+    cb(decoded, nil)
+  end)
+end
+
+--- One `sf org display` call gets everything needed to talk to the Tooling
+--- REST API directly afterwards (curl), instead of paying the `sf` CLI's
+--- ~5-6s Node startup cost on every single query/create/update/delete.
+--- @param cb fun(session: table|nil, err: string|nil)
+H.get_org_session = function(cb)
+  local cmd = B:new():cmd("org"):act("display"):addParams("--json"):buildAsTable()
+  H.tooling_call(cmd, "Failed to get org session", function(result, err)
+    local r = result and result.result
+    if not r or U.is_empty_str(r.accessToken) then
+      return cb(nil, err or "failed to read org session (accessToken missing)")
+    end
+    cb({ token = r.accessToken, url = r.instanceUrl, api_version = r.apiVersion, username = r.username }, nil)
+  end)
+end
+
+--- @param args string[] curl args (method/url/headers/body), auth omitted
+--- @param cb fun(decoded: table|nil, err: string|nil) `decoded.status` is the
+---   HTTP status; `decoded.records`/`.id`/`.success` depend on the endpoint.
+H.curl_json = function(args, cb)
+  local cmd = vim.list_extend({ "curl", "-s", "-w", "\nHTTPSTATUS:%{http_code}" }, args)
+  U.silent_system_call(cmd, nil, "Tooling API request failed", function(obj)
+    local body, status = (obj.stdout or ""):match("^(.-)\nHTTPSTATUS:(%d+)%s*$")
+    status = tonumber(status) or 0
+    if U.is_empty_str(body) then
+      return cb({ status = status }, nil)
+    end
+
+    local ok, decoded = pcall(vim.json.decode, body)
+    if not ok then
+      return cb(nil, "failed to parse Tooling API response: " .. body)
+    end
+    if decoded[1] and decoded[1].message and decoded[1].errorCode then
+      return cb(nil, decoded[1].message)
+    end
+    decoded.status = status
+    cb(decoded, nil)
+  end)
+end
+
+--- @param session table {token, url, api_version}
+--- @param soql string
+--- @param cb fun(records: table[]|nil, err: string|nil)
+H.rest_query = function(session, soql, cb)
+  H.curl_json({
+    "-G",
+    string.format("%s/services/data/v%s/tooling/query", session.url, session.api_version),
+    "--data-urlencode",
+    "q=" .. soql,
+    "-H",
+    "Authorization: Bearer " .. session.token,
+  }, function(decoded, err)
+    if not decoded then
+      return cb(nil, err)
+    end
+    cb(decoded.records or {}, nil)
+  end)
+end
+
+--- Same as `H.rest_query` but against the standard (non-Tooling) REST query
+--- endpoint — needed for fields the Tooling API's object representation
+--- doesn't expose (e.g. `User.IsActive` errors as an unknown column via
+--- `/tooling/query`, but works fine via plain `/query`).
+H.rest_query_std = function(session, soql, cb)
+  H.curl_json({
+    "-G",
+    string.format("%s/services/data/v%s/query", session.url, session.api_version),
+    "--data-urlencode",
+    "q=" .. soql,
+    "-H",
+    "Authorization: Bearer " .. session.token,
+  }, function(decoded, err)
+    if not decoded then
+      return cb(nil, err)
+    end
+    cb(decoded.records or {}, nil)
+  end)
+end
+
+--- @param session table
+--- @param sobject string
+--- @param fields table
+--- @param cb fun(id: string|nil, err: string|nil)
+H.rest_create = function(session, sobject, fields, cb)
+  H.curl_json({
+    "-X",
+    "POST",
+    string.format("%s/services/data/v%s/tooling/sobjects/%s/", session.url, session.api_version, sobject),
+    "-H",
+    "Authorization: Bearer " .. session.token,
+    "-H",
+    "Content-Type: application/json",
+    "-d",
+    vim.json.encode(fields),
+  }, function(decoded, err)
+    if not decoded or not decoded.id then
+      return cb(nil, err or "create failed")
+    end
+    cb(decoded.id, nil)
+  end)
+end
+
+--- @param session table
+--- @param sobject string
+--- @param id string
+--- @param fields table
+--- @param cb fun(ok: boolean, err: string|nil)
+H.rest_update = function(session, sobject, id, fields, cb)
+  H.curl_json({
+    "-X",
+    "PATCH",
+    string.format("%s/services/data/v%s/tooling/sobjects/%s/%s", session.url, session.api_version, sobject, id),
+    "-H",
+    "Authorization: Bearer " .. session.token,
+    "-H",
+    "Content-Type: application/json",
+    "-d",
+    vim.json.encode(fields),
+  }, function(decoded, err)
+    cb(decoded ~= nil and decoded.status == 204, err)
+  end)
+end
+
+--- @param session table
+--- @param sobject string
+--- @param id string
+--- @param cb fun(ok: boolean, err: string|nil)
+H.rest_delete = function(session, sobject, id, cb)
+  H.curl_json({
+    "-X",
+    "DELETE",
+    string.format("%s/services/data/v%s/tooling/sobjects/%s/%s", session.url, session.api_version, sobject, id),
+    "-H",
+    "Authorization: Bearer " .. session.token,
+  }, function(decoded, err)
+    cb(decoded ~= nil and decoded.status == 204, err)
+  end)
+end
+
+--- ponytail: matches on a raw 15/18-char User Id ("005..."); anything else is
+--- treated as a username/email and resolved via a query. Good enough since
+--- Salesforce usernames never start with "005".
+--- @param session table
+--- @param user string|nil username/email/Id; nil = the org's own user
+--- @param cb fun(user_id: string|nil, err: string|nil)
+H.resolve_target_user = function(session, user, cb)
+  if not U.is_empty_str(user) and user:match("^005%w%w%w%w%w%w%w%w%w%w%w%w%w%w%w?%w?%w?$") then
+    return cb(user, nil)
+  end
+
+  local username = U.is_empty_str(user) and session.username or user
+  H.rest_query(session, string.format("SELECT Id FROM User WHERE Username='%s'", username), function(records, err)
+    if not records or #records == 0 then
+      return cb(nil, err or ("no user found with username '" .. username .. "'"))
+    end
+    cb(records[1].Id, nil)
+  end)
+end
+
+--- Find the `SFNVIM_REPLAY` DebugLevel (ApexCode=FINEST, Visualforce=FINER),
+--- creating it if missing.
+--- @param session table
+--- @param cb fun(debug_level_id: string|nil, err: string|nil)
+H.find_or_create_debug_level = function(session, cb)
+  H.rest_query(session, string.format("SELECT Id FROM DebugLevel WHERE DeveloperName='%s'", DEBUG_LEVEL_NAME), function(records, err)
+    if not records then
+      return cb(nil, err)
+    end
+    if #records > 0 then
+      return cb(records[1].Id, nil)
+    end
+
+    H.rest_create(session, "DebugLevel", {
+      DeveloperName = DEBUG_LEVEL_NAME,
+      MasterLabel = DEBUG_LEVEL_NAME,
+      ApexCode = "FINEST",
+      Visualforce = "FINER",
+    }, cb)
+  end)
+end
+
+--- ISO8601 UTC timestamp `minutes` from now (or now, if `minutes` is nil/0).
+--- @param minutes number|nil
+--- @return string
+H.iso_utc = function(minutes)
+  return os.date("!%Y-%m-%dT%H:%M:%S.000Z", os.time() + (minutes or 0) * 60)
+end
+
+--- Create a TraceFlag for `user_id`/`debug_level_id` expiring in `minutes`,
+--- or extend an existing one (whichever for that user/LogType has the latest
+--- expiration) if it hasn't expired yet.
+--- @param session table
+--- @param user_id string
+--- @param debug_level_id string
+--- @param minutes number
+--- @param cb fun(ok: boolean, err: string|nil)
+H.upsert_trace_flag = function(session, user_id, debug_level_id, minutes, cb)
+  local soql = string.format(
+    "SELECT Id, ExpirationDate FROM TraceFlag WHERE TracedEntityId='%s' AND LogType='DEVELOPER_LOG' ORDER BY ExpirationDate DESC LIMIT 1",
+    user_id
+  )
+  H.rest_query(session, soql, function(records, err)
+    if not records then
+      return cb(false, err)
+    end
+
+    local existing = records[1]
+    local still_active = existing and H.parse_sf_datetime(existing.ExpirationDate) > os.time()
+
+    if still_active then
+      return H.rest_update(session, "TraceFlag", existing.Id, {
+        DebugLevelId = debug_level_id,
+        ExpirationDate = H.iso_utc(minutes),
+      }, cb)
+    end
+
+    H.rest_create(session, "TraceFlag", {
+      TracedEntityId = user_id,
+      DebugLevelId = debug_level_id,
+      LogType = "DEVELOPER_LOG",
+      StartDate = H.iso_utc(0),
+      ExpirationDate = H.iso_utc(minutes),
+    }, function(id, create_err)
+      cb(id ~= nil, create_err)
+    end)
+  end)
+end
+
+--- Parse a Salesforce datetime string (e.g. "2024-01-01T00:00:00.000+0000")
+--- into a Unix timestamp.
+--- @param s string
+--- @return integer
+H.parse_sf_datetime = function(s)
+  local y, mo, d, h, mi, se = s:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
+  if not y then
+    return 0
+  end
+  -- os.time(table) assumes *local* time; the parsed fields are UTC, so
+  -- correct by the current local/UTC offset.
+  local t = { year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = tonumber(h), min = tonumber(mi), sec = tonumber(se) }
+  local now = os.time()
+  local utc_now = os.date("!*t", now)
+  local local_now = os.date("*t", now)
+  utc_now.isdst = local_now.isdst
+  local offset = os.difftime(os.time(local_now), os.time(utc_now))
+  return os.time(t) + offset
+end
+
+--- Salesforce enforces a 24h max TraceFlag duration.
+local MAX_TRACE_FLAG_MINUTES = 24 * 60
+
+--- Enable Apex replay-ready debug logging: creates (or reuses) a
+--- `SFNVIM_REPLAY` DebugLevel and an active TraceFlag, for the current org
+--- user by default.
+--- @param opts number|table|nil number = minutes (back-compat shorthand), or
+---   `{ minutes = number, user = string }`. `user` is a username/email/Id to
+---   trace instead of the org's own user. minutes defaults to
+---   `replay_debugger.trace_flag_hours * 60`, capped at 24h.
+Debug.enable_replay_logging = function(opts)
+  opts = type(opts) == "number" and { minutes = opts } or (opts or {})
+  local minutes = math.min(opts.minutes or (cfg().trace_flag_hours * 60), MAX_TRACE_FLAG_MINUTES)
+
+  if vim.fn.executable("curl") ~= 1 then
+    return U.show_err("sf.nvim: `curl` is required for replay logging (Tooling API calls).")
+  end
+  if U.is_empty_str(U.target_org) then
+    return U.show_err("sf.nvim: Target_org empty!")
+  end
+
+  H.get_org_session(function(session, err)
+    if not session then
+      return U.show_err("sf.nvim: " .. err)
+    end
+    H.enable_replay_logging_with_session(session, opts.user, minutes)
+  end)
+end
+
+--- @param session table already-fetched org session (avoids a redundant
+---   `sf org display` call when the caller already has one, e.g. the user
+---   picker below)
+--- @param user string|nil
+--- @param minutes number
+H.enable_replay_logging_with_session = function(session, user, minutes)
+  H.resolve_target_user(session, user, function(user_id, user_err)
+    if not user_id then
+      return U.show_err("sf.nvim: " .. user_err)
+    end
+    H.find_or_create_debug_level(session, function(debug_level_id, dl_err)
+      if not debug_level_id then
+        return U.show_err("sf.nvim: " .. dl_err)
+      end
+      H.upsert_trace_flag(session, user_id, debug_level_id, minutes, function(ok, tf_err)
+        if not ok then
+          return U.show_err("sf.nvim: failed to enable replay logging" .. (tf_err and (": " .. tf_err) or ""))
+        end
+        U.show(string.format("sf.nvim: replay logging enabled for %s (%d min)", user or session.username, minutes))
+      end)
+    end)
+  end)
+end
+
+--- Interactively pick an active user (fzf-lua, else `vim.ui.select`) and
+--- enable replay logging for them.
+--- @param minutes number|nil
+Debug.pick_user_and_enable_replay_logging = function(minutes)
+  if vim.fn.executable("curl") ~= 1 then
+    return U.show_err("sf.nvim: `curl` is required for replay logging (Tooling API calls).")
+  end
+  if U.is_empty_str(U.target_org) then
+    return U.show_err("sf.nvim: Target_org empty!")
+  end
+
+  local resolved_minutes = math.min(minutes or (cfg().trace_flag_hours * 60), MAX_TRACE_FLAG_MINUTES)
+
+  H.get_org_session(function(session, err)
+    if not session then
+      return U.show_err("sf.nvim: " .. err)
+    end
+    H.rest_query_std(session, "SELECT Username, Name FROM User WHERE IsActive = true ORDER BY Name LIMIT 50", function(records, qerr)
+      if not records or #records == 0 then
+        return U.show_err("sf.nvim: " .. (qerr or "no active users found"))
+      end
+
+      local entries, by_entry = {}, {}
+      for _, u in ipairs(records) do
+        local entry = string.format("%s (%s)", u.Name, u.Username)
+        table.insert(entries, entry)
+        by_entry[entry] = u.Username
+      end
+
+      local on_choice = function(username)
+        if username then
+          H.enable_replay_logging_with_session(session, username, resolved_minutes)
+        end
+      end
+
+      if U.is_installed("fzf-lua") then
+        require("fzf-lua").fzf_exec(entries, {
+          actions = {
+            ["default"] = function(selected)
+              on_choice(by_entry[selected[1]])
+            end,
+          },
+        })
+      else
+        vim.ui.select(entries, { prompt = "Enable replay logging for:" }, function(choice)
+          on_choice(choice and by_entry[choice])
+        end)
+      end
+    end)
+  end)
+end
+
+--- Disable replay logging by expiring the active `TraceFlag` for the given
+--- user (default: the current org user).
+--- @param user string|nil username/email/Id
+Debug.disable_replay_logging = function(user)
+  if vim.fn.executable("curl") ~= 1 then
+    return U.show_err("sf.nvim: `curl` is required for replay logging (Tooling API calls).")
+  end
+  if U.is_empty_str(U.target_org) then
+    return U.show_err("sf.nvim: Target_org empty!")
+  end
+
+  H.get_org_session(function(session, err)
+    if not session then
+      return U.show_err("sf.nvim: " .. err)
+    end
+    H.resolve_target_user(session, user, function(user_id, user_err)
+      if not user_id then
+        return U.show_err("sf.nvim: " .. user_err)
+      end
+
+      local soql = string.format(
+        "SELECT Id FROM TraceFlag WHERE TracedEntityId='%s' AND LogType='DEVELOPER_LOG' ORDER BY ExpirationDate DESC LIMIT 1",
+        user_id
+      )
+      H.rest_query(session, soql, function(records, query_err)
+        if not records or #records == 0 then
+          return U.show_warn("sf.nvim: " .. (query_err or "no replay logging TraceFlag found for that user"))
+        end
+        H.rest_delete(session, "TraceFlag", records[1].Id, function(ok, delete_err)
+          if not ok then
+            return U.show_err("sf.nvim: " .. (delete_err or "failed to disable replay logging"))
+          end
+          U.show("sf.nvim: replay logging disabled")
+        end)
+      end)
+    end)
+  end)
+end
+
+--- Run the Apex test under the cursor, then download and launch the newest
+--- log produced by that run. Warns (rather than failing) if replay logging
+--- doesn't look enabled, since the log may then lack the required levels.
+Debug.run_test_and_replay = function()
+  require("sf.test").run_current_test(function()
+    H.launch_newest_org_log()
+  end)
+end
+
+H.launch_newest_org_log = function()
+  H.get_org_session(function(session, err)
+    if not session then
+      return U.show_err("sf.nvim: " .. err)
+    end
+    H.rest_query(session, "SELECT Id FROM ApexLog ORDER BY StartTime DESC LIMIT 1", function(records, qerr)
+      if not records or #records == 0 then
+        return U.show_warn("sf.nvim: no logs found in org - run `:SF debug enable` first? (" .. (qerr or "") .. ")")
+      end
+
+      local dir = U.get_sf_root() .. ".sfdx/tools/debug/logs/"
+      require("sf.org").download_log(records[1].Id, dir, Debug.launch)
+    end)
   end)
 end
 
