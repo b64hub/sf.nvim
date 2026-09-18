@@ -836,4 +836,59 @@ H.launch_newest_org_log = function()
   end)
 end
 
+--- Download the Apex Replay Debugger adapter from Open VSX into
+--- `stdpath("data")/sf-nvim/apex-replay-debugger/` (the default auto-detect
+--- location, see `H.resolve_adapter_path`). Requires `curl` and `unzip`.
+Debug.install_adapter = function()
+  if vim.fn.executable("curl") ~= 1 or vim.fn.executable("unzip") ~= 1 then
+    return U.show_err("sf.nvim: `curl` and `unzip` are required to install the adapter.")
+  end
+
+  local meta_url = "https://open-vsx.org/api/salesforce/salesforcedx-vscode-apex-replay-debugger/latest"
+  U.show("sf.nvim: fetching adapter metadata...")
+  vim.system(
+    { "curl", "-sL", meta_url },
+    {},
+    vim.schedule_wrap(function(obj)
+      if obj.code ~= 0 or U.is_empty_str(obj.stdout) then
+        return U.show_err("sf.nvim: failed to fetch adapter metadata")
+      end
+
+      local ok, meta = pcall(vim.json.decode, obj.stdout)
+      local download_url = ok and vim.tbl_get(meta, "downloads", "universal")
+      local version = ok and meta.version
+      if not download_url then
+        return U.show_err("sf.nvim: could not find a download URL in adapter metadata")
+      end
+
+      local dest_dir = vim.fn.stdpath("data") .. "/sf-nvim/apex-replay-debugger"
+      local tmp_vsix = vim.fn.tempname() .. ".vsix"
+      U.show("sf.nvim: downloading adapter v" .. version .. "...")
+
+      vim.system(
+        { "curl", "-sL", "-o", tmp_vsix, download_url },
+        {},
+        vim.schedule_wrap(function(dl)
+          if dl.code ~= 0 then
+            return U.show_err("sf.nvim: failed to download adapter")
+          end
+
+          vim.fn.mkdir(dest_dir, "-p")
+          vim.system(
+            { "unzip", "-oq", tmp_vsix, "-d", dest_dir },
+            {},
+            vim.schedule_wrap(function(uz)
+              vim.fn.delete(tmp_vsix)
+              if uz.code ~= 0 then
+                return U.show_err("sf.nvim: failed to unzip adapter: " .. (uz.stderr or ""))
+              end
+              U.show(string.format("sf.nvim: installed Apex Replay Debugger adapter v%s to %s", version, dest_dir))
+            end)
+          )
+        end)
+      )
+    end)
+  )
+end
+
 return Debug

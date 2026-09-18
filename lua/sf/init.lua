@@ -291,4 +291,8 @@ Sf.disable_replay_debug_logging = Debug.disable_replay_logging
 --- log produced by that run with the Apex Replay Debugger.
 Sf.run_test_and_replay_debug = Debug.run_test_and_replay
 
+--- Download the Apex Replay Debugger adapter (Open VSX) into the default
+--- auto-detect location. Requires `curl` and `unzip`.
+Sf.install_replay_debug_adapter = Debug.install_adapter
+
 return Sf

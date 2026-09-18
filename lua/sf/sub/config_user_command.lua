@@ -55,6 +55,13 @@ local debug_impl = function(sub_cmd, arg, extra, extra2)
   if arg == "disable" then
     return func(extra)
   end
+  if arg == "enableFor" then
+    local minutes = extra and tonumber(extra) or nil
+    if extra and not minutes then
+      return U.show_err("Invalid minutes: " .. extra)
+    end
+    return func(minutes)
+  end
   func()
 end
 
@@ -153,6 +160,8 @@ M.sub_cmd_tbl = {
       enable = Sf.enable_replay_debug_logging,
       disable = Sf.disable_replay_debug_logging,
       test = Sf.run_test_and_replay_debug,
+      installAdapter = Sf.install_replay_debug_adapter,
+      enableFor = Sf.pick_user_and_enable_replay_debug_logging,
     },
     impl = debug_impl,
     complete = function(subcmd_arg_lead)
