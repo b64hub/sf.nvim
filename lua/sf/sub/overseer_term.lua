@@ -18,7 +18,7 @@ function T:setup(cfg)
   return self
 end
 
-function T:run(cmd, cb)
+function T:run(cmd, cb, opts)
   local task = overseer.new_task({
     cmd = cmd,
     components = { "default" },

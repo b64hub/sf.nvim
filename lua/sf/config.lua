@@ -43,13 +43,52 @@ local default_cfg = {
     dimensions = {
       height = 0.4, -- proportional of the editor height. 0.4 means 40%.
       width = 0.8, -- proportional of the editor width. 0.8 means 80%.
-      x = 0.5, -- starting position of width. Details in `get_dimension()` in raw_term.lua source code.
-      y = 0.9, -- starting position of height. Details in `get_dimension()` in raw_term.lua source code.
+      -- x/y are unset by default: the float uses `ui.terminal.position` (a
+      -- corner) instead. Set both to opt back into the old proportional
+      -- "custom" positioning via `get_dimension()` in raw_term.lua.
+      -- x = 0.5,
+      -- y = 0.9,
     },
-    -- `:h jobstart-options` for below options
-    border = "single",
-    hl = "Normal",
+    -- `:h jobstart-options` for below options.
+    -- `border`/`hl` are unset by default so the new `ui.border` and `Sf*`
+    -- highlight groups apply. Set either to keep the old fixed styling.
+    -- border = "single",
+    -- hl = "Normal",
     clear_env = false,
+  },
+
+  -- Restyled UI: float border/accent color and default terminal position.
+  ui = {
+    accent = "#1B96FF", -- bright "Salesforce blue"; used for border & title
+    border = "rounded",
+    icons = true, -- set false if you don't have a Nerd Font
+    terminal = {
+      position = "bottom_right", -- "bottom_right" | "top_right" | "bottom_left" | "top_left" | "center" | "custom"
+      width = 0.45, -- fraction of editor columns (or absolute cells if > 1)
+      height = 0.35, -- fraction of editor lines (or absolute cells if > 1)
+      margin = { row = 1, col = 2 },
+    },
+
+    -- quiet progress widget for "progress"-mode tasks (see `task_display`)
+    progress = {
+      backend = "float", -- "float" | "notify" (vim.notify) | "auto" (notify if snacks/nvim-notify present, else float)
+      spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+      interval_ms = 80,
+      success_timeout_ms = 3000, -- how long the "✓ done" message stays
+      error_timeout_ms = 10000, -- errors stay longer
+    },
+
+    -- how each kind of task is shown: "progress" (spinner only) or "terminal" (visible float)
+    task_display = {
+      default = "progress",
+      deploy = "progress",
+      retrieve = "progress",
+      test = "terminal", -- test output is what you want to read
+      query = "terminal",
+      anonymous = "terminal",
+    },
+
+    expand_on_error = true, -- auto-open the terminal float if a "progress" task fails
   },
 
   -- The terminal strategy to use for running tasks.
@@ -78,6 +117,13 @@ local default_cfg = {
   -- wait time for sf commands (in minutes)
   -- running all local tests still defaults to 180 mins, as it is a costly operation
   sf_wait_time = 5,
+
+  -- statusline components (see `lua/sf/statusline.lua`)
+  statusline = {
+    org = true,
+    trace_flags = true,
+    trace_refresh_minutes = 5,
+  },
 
   -- Apex Replay Debugger (via nvim-dap). See `doc/sf.txt` / README for setup.
   replay_debugger = {
@@ -123,6 +169,9 @@ local init = function()
       log = "sflog",
     },
   })
+
+  require("sf.ui.highlights").setup()
+  require("sf.ui.icons").setup_devicons()
 
   AutoCmd.set_auto_cmd_and_try_set_default_keys()
 

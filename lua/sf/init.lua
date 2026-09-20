@@ -91,6 +91,10 @@ Sf.go_to_sf_root = Term.go_to_sf_root
 --- Allows to pass the user defined command into SFTerm.
 Sf.run = Term.run
 
+--- Show the last task's output in the SFTerm float. This is the "expand"
+--- action for a quiet task (deploy/retrieve) run in "progress" display mode.
+Sf.show_last_task_output = Term.show_last_task_output
+
 -- From Org module ==========================================================
 
 --- Run "sf org list" command under the hood and stores the org list.
@@ -121,6 +125,21 @@ Sf.org_open_current_file = Org.open_current_file
 
 --- Get a list of logs from the org, and choose one to download and open
 Sf.pull_log = Org.pull_log
+
+--- Re-read the target_org from the sf CLI's own config files (project
+--- `.sf/config.json`, then global `~/.sf/config.json`) and update it if it
+--- changed. File reads only, no `sf` CLI call; safe to call often (already
+--- wired to `FocusGained`/`DirChanged`).
+Sf.refresh_target_org_from_disk = Org.refresh_target_org_from_disk
+
+--- Refresh everything the statusline shows: the target_org (from disk, see
+--- |Sf.refresh_target_org_from_disk|) and active trace flags (async, via
+--- the Tooling API). Safe to call anytime; never errors. Also available as
+--- `:SF status refresh`.
+Sf.refresh_status = function()
+  Org.refresh_target_org_from_disk()
+  require("sf.state").refresh_trace_flags()
+end
 
 -- From Project module ==========================================================
 

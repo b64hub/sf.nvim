@@ -153,7 +153,15 @@ H.pick_org_log = function(dir, on_done)
   U.system_call(cmd_tbl, nil, "Failed to get logs from org", on_list, "Querying logs...")
 end
 
-H.orgs = {}
+H.orgs = {} -- array of { alias, username, is_scratch, is_sandbox, is_prod, is_default, expiration_date }
+
+--- Open a specific org (not necessarily the target_org) in the browser.
+---@param alias string
+H.open_org = function(alias)
+  local cmd = B:new():cmd("org"):act("open"):set_org(alias):build()
+  local err_msg = "Command failed: " .. cmd
+  U.job_call(cmd, nil, err_msg)
+end
 
 H.clean_org_cache = function()
   H.orgs = {}
@@ -163,20 +171,23 @@ H.set_target_org = function()
   if vim.tbl_isempty(H.orgs) then
     return U.show_err("No orgs available. Run :SF org list first.")
   end
-  vim.ui.select(H.orgs, {
-    prompt = "Local target_org:",
-  }, function(choice)
-    if choice ~= nil then
-      local org = string.gsub(choice, "%[S%] ", "")
+
+  require("sf.ui.org_explorer").pick(H.orgs, {
+    prompt = "Local target_org",
+    on_open = function(record)
+      H.open_org(record.alias)
+    end,
+    on_choice = function(record)
+      local org = record.alias
       local cmd = 'sf config set target-org "' .. org .. '"'
       local err_msg = org .. " - set target_org failed! Not in a sfdx project folder?"
       local cb = function()
-        U.target_org = org
+        U.set_target_org(org, record)
       end
 
       U.silent_job_call(cmd, nil, err_msg, cb)
-    end
-  end)
+    end,
+  })
 end
 
 H.set_global_target_org = function()
@@ -184,20 +195,22 @@ H.set_global_target_org = function()
     return U.show_err("No orgs available. Run :SF org list first.")
   end
 
-  vim.ui.select(H.orgs, {
-    prompt = "Global target_org:",
-  }, function(choice)
-    if choice ~= nil then
-      local org = string.gsub(choice, "%[S%] ", "")
+  require("sf.ui.org_explorer").pick(H.orgs, {
+    prompt = "Global target_org",
+    on_open = function(record)
+      H.open_org(record.alias)
+    end,
+    on_choice = function(record)
+      local org = record.alias
       local cmd = "sf config set target-org --global " .. org
       local msg = "Global target_org set: " .. org
       local err_msg = string.format("Global set target_org [%s] failed!", org)
       local cb = function()
-        U.target_org = org
+        U.set_target_org(org, record)
       end
       U.silent_job_call(cmd, msg, err_msg, cb)
-    end
-  end)
+    end,
+  })
 end
 
 ---@param data string
@@ -216,12 +229,23 @@ H.store_orgs = function(data)
 
   for _, v in pairs(org_data) do
     local alias = v.alias or v.username
-    if v.isDefaultUsername then
-      U.target_org = alias
+    local is_scratch = v.isScratch == true
+    local is_sandbox = v.isSandbox == true
+    local record = {
+      alias = alias,
+      username = v.username,
+      is_scratch = is_scratch,
+      is_sandbox = is_sandbox,
+      is_prod = not is_scratch and not is_sandbox,
+      is_default = v.isDefaultUsername == true,
+      expiration_date = v.expirationDate,
+    }
+
+    if record.is_default then
+      U.set_target_org(alias, record)
     end
 
-    local org_entry = v.isScratch and "[S] " .. alias or alias
-    table.insert(H.orgs, org_entry)
+    table.insert(H.orgs, record)
   end
 end
 
@@ -241,6 +265,54 @@ H.fetch_org_list = function()
   H.fetch_and_store_orgs()
 end
 
+--- Read "target-org" from the project's `.sf/config.json`, falling back to
+--- the global `~/.sf/config.json`. File reads only, no `sf` CLI call, so
+--- this is cheap enough to run on `FocusGained`/`DirChanged`.
+---@return string|nil
+H.read_target_org_from_config_files = function()
+  local candidates = {}
+
+  local ok_root, root = pcall(U.get_sf_root)
+  if ok_root and root then
+    table.insert(candidates, root .. ".sf/config.json")
+  end
+
+  local home = vim.uv.os_homedir()
+  if home then
+    table.insert(candidates, home .. "/.sf/config.json")
+  end
+
+  for _, path in ipairs(candidates) do
+    local ok_read, lines = pcall(vim.fn.readfile, path)
+    if ok_read then
+      local ok_json, tbl = pcall(vim.json.decode, table.concat(lines, "\n"))
+      if ok_json and tbl and tbl["target-org"] then
+        return tbl["target-org"]
+      end
+    end
+  end
+
+  return nil
+end
+
+--- Pick up a target-org change made outside Nvim (e.g. `sf config set
+--- target-org` in another terminal), by reading the sf CLI's own config
+--- files rather than shelling out. Safe to call frequently (e.g. on
+--- `FocusGained`); never errors.
+Org.refresh_target_org_from_disk = function()
+  local ok, alias = pcall(H.read_target_org_from_config_files)
+  if ok and alias and alias ~= U.target_org then
+    local record
+    for _, r in ipairs(H.orgs) do
+      if r.alias == alias then
+        record = r
+        break
+      end
+    end
+    U.set_target_org(alias, record)
+  end
+end
+
 H.diff_in_target_org = function()
   if U.is_empty_str(U.target_org) then
     return U.show_err("Target_org empty!")
@@ -254,13 +326,15 @@ H.diff_in_org = function()
     return U.show_err("No orgs available. Run :SF org list first.")
   end
 
-  vim.ui.select(H.orgs, {
-    prompt = "Select org to diff in:",
-  }, function(choice)
-    if choice ~= nil then
-      H.diff_in(choice)
-    end
-  end)
+  require("sf.ui.org_explorer").pick(H.orgs, {
+    prompt = "Diff in org",
+    on_open = function(record)
+      H.open_org(record.alias)
+    end,
+    on_choice = function(record)
+      H.diff_in(record.alias)
+    end,
+  })
 end
 
 ---@param org string

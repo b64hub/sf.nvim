@@ -76,12 +76,35 @@ T["setup()"]["has default config"] = function()
     dimensions = {
       height = 0.4,
       width = 0.8,
-      x = 0.5,
-      y = 0.9,
     },
-    border = "single",
-    hl = "Normal",
     clear_env = false,
+  })
+  expect_config("ui", {
+    accent = "#1B96FF",
+    border = "rounded",
+    icons = true,
+    terminal = {
+      position = "bottom_right",
+      width = 0.45,
+      height = 0.35,
+      margin = { row = 1, col = 2 },
+    },
+    progress = {
+      backend = "float",
+      spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+      interval_ms = 80,
+      success_timeout_ms = 3000,
+      error_timeout_ms = 10000,
+    },
+    task_display = {
+      default = "progress",
+      deploy = "progress",
+      retrieve = "progress",
+      test = "terminal",
+      query = "terminal",
+      anonymous = "terminal",
+    },
+    expand_on_error = true,
   })
   expect_config("terminal", "integrated")
   expect_config("default_dir", "/force-app/main/default/")
@@ -102,11 +125,7 @@ T["setup()"]["has default term config"] = function()
     dimensions = {
       height = 0.4,
       width = 0.8,
-      x = 0.5,
-      y = 0.9,
     },
-    border = "single",
-    hl = "Normal",
     clear_env = false,
   })
 end
@@ -154,14 +173,14 @@ T["setup()"]["no user-keys by default"] = function()
   child.open_in_sf_dir("test.txt")
 
   -- global;
-  no_nmap("<leader>ss")
-  no_nmap("<leader>sf")
-  no_nmap("<leader>so")
-  no_nmap("<leader>ml")
+  no_nmap("<leader>sfs")
+  no_nmap("<leader>sff")
+  no_nmap("<leader>sfo")
+  no_nmap("<leader>sfml")
 
   -- file-level;
-  no_nmap("<leader>sp")
-  no_nmap("<leader>sr")
+  no_nmap("<leader>sfp")
+  no_nmap("<leader>sfr")
 end
 
 T["setup()"]["no user-keys when non-sf-project dir"] = function()
@@ -169,14 +188,14 @@ T["setup()"]["no user-keys when non-sf-project dir"] = function()
   child.open_in_non_sf_dir("NonsfProject.cls")
 
   -- global;
-  no_nmap("<leader>ss")
-  no_nmap("<leader>sf")
-  no_nmap("<leader>so")
-  no_nmap("<leader>ml")
+  no_nmap("<leader>sfs")
+  no_nmap("<leader>sff")
+  no_nmap("<leader>sfo")
+  no_nmap("<leader>sfml")
 
   -- file-level;
-  no_nmap("<leader>sp")
-  no_nmap("<leader>sr")
+  no_nmap("<leader>sfp")
+  no_nmap("<leader>sfr")
 end
 
 T["setup()"]['only global user-keys when 1. in sf-project dir 2. opened file not in "hotkeys_in_filetypes"'] = function()
@@ -184,14 +203,14 @@ T["setup()"]['only global user-keys when 1. in sf-project dir 2. opened file not
   child.open_in_sf_dir("test.txt")
 
   -- global;
-  has_nmap("<leader>ss")
-  has_nmap("<leader>sf")
-  has_nmap("<leader>so")
-  has_nmap("<leader>ml")
+  has_nmap("<leader>sfs")
+  has_nmap("<leader>sff")
+  has_nmap("<leader>sfo")
+  has_nmap("<leader>sfml")
 
   -- file-level;
-  no_nmap("<leader>sp")
-  no_nmap("<leader>sr")
+  no_nmap("<leader>sfp")
+  no_nmap("<leader>sfr")
 end
 
 T["setup()"]['only global user-keys when 0. enable_hotkeys 1. in sf-project sub-dir 2. opened file not in "hotkeys_in_filetypes"'] = function()
@@ -199,14 +218,14 @@ T["setup()"]['only global user-keys when 0. enable_hotkeys 1. in sf-project sub-
   child.go_to_sf_sub_dir()
 
   -- global;
-  has_nmap("<leader>ss")
-  has_nmap("<leader>sf")
-  has_nmap("<leader>so")
-  has_nmap("<leader>ml")
+  has_nmap("<leader>sfs")
+  has_nmap("<leader>sff")
+  has_nmap("<leader>sfo")
+  has_nmap("<leader>sfml")
 
   -- file-level;
-  no_nmap("<leader>sp")
-  no_nmap("<leader>sr")
+  no_nmap("<leader>sfp")
+  no_nmap("<leader>sfr")
 end
 
 T["setup()"]['has all user-keys when 0. enable_hotkeys 1. in sf-project sub-dir 2. opened file in "hotkeys_in_filetypes"'] = function()
@@ -214,30 +233,30 @@ T["setup()"]['has all user-keys when 0. enable_hotkeys 1. in sf-project sub-dir 
   child.open_in_sf_dir("SfProject.cls")
 
   -- global;
-  has_nmap("<leader>ss")
-  has_nmap("<leader>sf")
-  has_nmap("<leader>so")
-  has_nmap("<leader>ml")
+  has_nmap("<leader>sfs")
+  has_nmap("<leader>sff")
+  has_nmap("<leader>sfo")
+  has_nmap("<leader>sfml")
 
   -- file-level;
-  has_nmap("<leader>sp")
-  has_nmap("<leader>sr")
+  has_nmap("<leader>sfp")
+  has_nmap("<leader>sfr")
 end
 
 T["setup()"]["global user-keys disabled -> enabled when 0. enable_hotkeys 1. switching files from non-sf-project to sf-project folder"] = function()
   child.sf_setup({ enable_hotkeys = true })
   child.open_in_non_sf_dir("test.txt")
 
-  no_nmap("<leader>ss")
-  no_nmap("<leader>sf")
-  no_nmap("<leader>so")
-  no_nmap("<leader>ml")
+  no_nmap("<leader>sfs")
+  no_nmap("<leader>sff")
+  no_nmap("<leader>sfo")
+  no_nmap("<leader>sfml")
 
   child.open_in_sf_dir("SfProject.cls")
-  has_nmap("<leader>ss")
-  has_nmap("<leader>sf")
-  has_nmap("<leader>so")
-  has_nmap("<leader>ml")
+  has_nmap("<leader>sfs")
+  has_nmap("<leader>sff")
+  has_nmap("<leader>sfo")
+  has_nmap("<leader>sfml")
 end
 
 T["setup()"]["global user-keys disabled -> enabled when 0. enable_hotkeys 1. switching path from non-sf-project to sf-project folder"] = function()
@@ -245,25 +264,25 @@ T["setup()"]["global user-keys disabled -> enabled when 0. enable_hotkeys 1. swi
   local root_path = child.fn.getcwd()
   child.go_to_non_sf_dir()
 
-  no_nmap("<leader>ss")
-  no_nmap("<leader>sf")
-  no_nmap("<leader>so")
-  no_nmap("<leader>ml")
+  no_nmap("<leader>sfs")
+  no_nmap("<leader>sff")
+  no_nmap("<leader>sfo")
+  no_nmap("<leader>sfml")
 
   child.cmd("cd " .. root_path .. "/tests/dir/sf-project/sf_cache/")
-  has_nmap("<leader>ss")
-  has_nmap("<leader>sf")
-  has_nmap("<leader>so")
-  has_nmap("<leader>ml")
+  has_nmap("<leader>sfs")
+  has_nmap("<leader>sff")
+  has_nmap("<leader>sfo")
+  has_nmap("<leader>sfml")
 end
 
 T["setup()"]["SFTerm filetype has its user-keys always defined by autocmd despite of non-sf-project dir."] = function()
   child.open_in_non_sf_dir("SFTerm")
-  no_nmap("<leader><leader>")
+  no_nmap("q")
   no_nmap("<C-c>")
 
   child.cmd("setfiletype SFTerm")
-  has_nmap("<leader><leader>")
+  has_nmap("q")
   has_nmap("<C-c>")
 end
 

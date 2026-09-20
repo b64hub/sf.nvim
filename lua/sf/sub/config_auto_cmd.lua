@@ -43,8 +43,19 @@ M.set_auto_cmd_and_try_set_default_keys = function()
         vim.keymap.set("n", keys, func, { buffer = true, desc = desc })
       end
 
-      nmap("<leader><leader>", require("sf").toggle_term, "terminal toggle")
+      -- "q" closes (redundant <leader><leader> here would shadow other
+      -- plugins' global <leader><leader> mapping, e.g. fzf-lua, while a
+      -- terminal buffer happens to have focus)
       nmap("<C-c>", require("sf").cancel, "cancel running command")
+      nmap("q", require("sf").toggle_term, "close terminal")
+    end,
+  })
+
+  -- Colorschemes clear highlight groups; redefine ours after every switch
+  vim.api.nvim_create_autocmd("ColorScheme", {
+    group = sf_group,
+    callback = function()
+      require("sf.ui.highlights").setup()
     end,
   })
 
@@ -59,6 +70,66 @@ M.set_auto_cmd_and_try_set_default_keys = function()
       end
     end,
   })
+
+  -- Pick up a target-org change made outside Nvim (e.g. another terminal
+  -- running `sf config set target-org`), from disk only, never the CLI.
+  vim.api.nvim_create_autocmd({ "FocusGained", "DirChanged" }, {
+    group = sf_group,
+    callback = function()
+      pcall(require("sf").refresh_target_org_from_disk)
+    end,
+  })
+
+  -- Refresh active trace flags on org change, and periodically while Nvim
+  -- has focus (never while unfocused -- no point polling if you're away).
+  if vim.g.sf.statusline.trace_flags then
+    vim.api.nvim_create_autocmd("User", {
+      group = sf_group,
+      pattern = "SfOrgChanged",
+      callback = function()
+        pcall(require("sf.state").refresh_trace_flags)
+      end,
+    })
+
+    local has_focus = true
+    local trace_timer = nil
+
+    vim.api.nvim_create_autocmd("FocusGained", {
+      group = sf_group,
+      callback = function()
+        has_focus = true
+      end,
+    })
+    vim.api.nvim_create_autocmd("FocusLost", {
+      group = sf_group,
+      callback = function()
+        has_focus = false
+      end,
+    })
+
+    local minutes = vim.g.sf.statusline.trace_refresh_minutes or 5
+    trace_timer = vim.uv.new_timer()
+    trace_timer:start(
+      minutes * 60 * 1000,
+      minutes * 60 * 1000,
+      vim.schedule_wrap(function()
+        if has_focus then
+          pcall(require("sf.state").refresh_trace_flags)
+        end
+      end)
+    )
+
+    vim.api.nvim_create_autocmd("VimLeavePre", {
+      group = sf_group,
+      callback = function()
+        if trace_timer then
+          trace_timer:stop()
+          trace_timer:close()
+          trace_timer = nil
+        end
+      end,
+    })
+  end
 
   -- Fetch org info in Vim start
   if vim.g.sf.fetch_org_list_at_nvim_start then

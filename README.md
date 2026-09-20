@@ -181,7 +181,7 @@ require('sf').setup({
   -- You can set it to `false` and have a manual control
   fetch_org_list_at_nvim_start = true,
 
-  -- Define what metadata to be listed in `list_md_to_retrieve()` (<leader>ml)
+  -- Define what metadata to be listed in `list_md_to_retrieve()` (<leader>sfml)
   -- Salesforce has numerous metadata types. We narrow down the scope of `list_md_to_retrieve()`.
   types_to_retrieve = {
     "ApexClass",
@@ -308,26 +308,26 @@ In case you decide to go with the default hotkeys:
 
 | Default key        | function name              | Explain                                                                                             |
 | ------------------ | -------------------------- | --------------------------------------------------------------------------------------------------- |
-| `<leader>ss`       | set_target_org             | set target_org                                                                                      |
-| `<leader>sf`       | fetch_org_list             | fetch/refresh orgs info                                                                             |
-| `<leader><leader>` | toggle_term                | terminal toggle                                                                                     |
-| `<leader>sp`       | save_and_push              | push current file                                                                                   |
-| `<leader>sr`       | retrieve                   | retrieve current file                                                                               |
-| `<leader>ta`       | run_all_tests_in_this_file | run all Apex tests in current file                                                                  |
-| `<leader>tt`       | run_current_test           | test this under cursor                                                                              |
-| `<leader>tr`       | repeat_last_tests          | repeat the last test                                                                                |
-| `<leader>to`       | open_test_select           | open a buffer to select tests                                                                       |
-| `<leader>ct`       | create_ctags               | create ctags file                                                                                   |
-| `<leader>sq`       | run_highlighted_soql       | Deault key is only enabled in visual model. Highlight selected text will be run as SOQL in the term |
+| `<leader>sfs`      | set_target_org             | set target_org                                                                                      |
+| `<leader>sff`      | fetch_org_list             | fetch/refresh orgs info                                                                             |
+| `<leader>sfv`      | toggle_term                | terminal toggle (view/expand last task output)                                                      |
+| `<leader>sfp`      | save_and_push              | push current file                                                                                   |
+| `<leader>sfr`      | retrieve                   | retrieve current file                                                                               |
+| `<leader>sfta`     | run_all_tests_in_this_file | run all Apex tests in current file                                                                  |
+| `<leader>sftt`     | run_current_test           | test this under cursor                                                                              |
+| `<leader>sftr`     | repeat_last_tests          | repeat the last test                                                                                |
+| `<leader>sfto`     | open_test_select           | open a buffer to select tests                                                                       |
+| `<leader>sfct`     | create_ctags               | create ctags file                                                                                   |
+| `<leader>sfq`      | run_highlighted_soql       | Deault key is only enabled in visual model. Highlight selected text will be run as SOQL in the term |
 | `\s`               | toggle_sign                | Show/hide line coverage sign icon                                                                   |
 | `]v`               | uncovered_jump_forward     | jump to next test uncovered hunk                                                                    |
 | `[v`               | uncovered_jump_backward    | jump to last test uncovered hunk                                                                    |
 
-All keys are listed in `:h sf.nvim` or [help.txt file](https://github.com/xixiaofinland/sf.nvim/blob/main/doc/sf.txt).
+All keys are listed in `:h sf.nvim` or [help.txt file](https://github.com/xixiaofinland/sf.nvim/blob/main/doc/sf.txt). All default hotkeys live under the `<leader>sf` prefix (except `\s`, `[v`/`]v`, which are global idioms), so they won't collide with a bare `<leader>s` mapping from another plugin.
 
 Example:
 
-- If you have [which-key](https://github.com/folke/which-key.nvim) or a similar plugin installed, pressing `<leader>s` will hint to you what keys are enabled as
+- If you have [which-key](https://github.com/folke/which-key.nvim) or a similar plugin installed, pressing `<leader>sf` will hint to you what keys are enabled as
   shown in the screenshot below. Remember that default hotkeys are \*\*disabled by default.
   ![Image 003](https://github.com/xixiaofinland/sf.nvim/assets/13655323/85faa8cb-b1df-40dd-a1bf-323f94bbf13c)
 
@@ -409,9 +409,9 @@ There are two categories of test actions.
 
 You can,
 
-- Run all tests in the current file by `<leader>ta`
-- Run the test under the cursor by `<leader>tt`
-- Select tests from the current file by `<leader>to`
+- Run all tests in the current file by `<leader>sfta`
+- Run the test under the cursor by `<leader>sftt`
+- Select tests from the current file by `<leader>sfto`
 
 These commands quickly run and verify the pass/fail result.
 
@@ -419,9 +419,9 @@ These commands quickly run and verify the pass/fail result.
 
 Use the same hotkeys but capitalize the last letter:
 
-- `<leader>tA`
-- `<leader>tT`
-- `<leader>tO`
+- `<leader>sftA`
+- `<leader>sftT`
+- `<leader>sftO`
 
 These test results contains code coverage information.
 
@@ -538,7 +538,7 @@ Upon starting Nvim, Sf.nvim executes `:SF org fetchList` to fetch and save
 authenticated org names. Display the target_org in your status line to
 facilitate command execution against the target org.
 
-If you don't have a default target_org, then this value is empty. You can use `<leader>ss` to set it.
+If you don't have a default target_org, then this value is empty. You can use `<leader>sfs` to set it.
 
 Example configuration using lualine.nvim with target_org(`xixiao100`):
 
@@ -550,6 +550,37 @@ Example configuration using lualine.nvim with target_org(`xixiao100`):
 ```
 
 ![Image 012](https://github.com/xixiaofinland/sf.nvim/assets/13655323/645a6625-aec6-4593-931e-84534ad3ac4c)
+
+#### Richer statusline component (`lua/sf/statusline.lua`)
+
+`require('sf.statusline')` gives a ready-made component that shows a cloud
+icon color-coded by org type (Salesforce blue for production, white for
+sandbox, cyan for scratch), only when you're in an sf project, and updates
+immediately on org changes -- no polling the CLI. A second component shows
+active Apex Replay Debugger trace flags with a countdown to expiry. For
+LazyVim / lualine.nvim:
+
+```lua
+{
+  "nvim-lualine/lualine.nvim",
+  optional = true,
+  opts = function(_, opts)
+    table.insert(opts.sections.lualine_x, 1, require("sf.statusline").lualine())
+    table.insert(opts.sections.lualine_x, 2, require("sf.statusline").lualine_trace())
+  end,
+}
+```
+
+Both respect the `statusline = { org = true, trace_flags = true,
+trace_refresh_minutes = 5 }` config (see `lua/sf/config.lua`); set
+`trace_flags = false` to skip the Tooling API query entirely (e.g. if you
+don't use the replay debugger).
+
+For a plain `'statusline'` (no lualine):
+
+```lua
+vim.o.statusline = "...%{%v:lua.require'sf.statusline'.render()%}"
+```
 
 ### code coverage
 
@@ -594,7 +625,7 @@ display it as you want. For example, I display it (`92`) in my status line next 
 The integrated terminal is designed to
 
 - accept input from hotkeys and user commands, such as "retrieve current metadata file"
-  `<leader>sr`
+  `<leader>sfr`
 - be a read-only buffer. It's, by design, not allowed to manually type commands
 - be disposable. The output text of the previous command is removed when a new command is invoked
 - be auto-prompt, in case the terminal is hidden at the moment the command execution completes. This is handy when you have a long-running command.
@@ -626,6 +657,98 @@ return {
     end
 }
 ```
+
+<br>
+
+## 🎨 UI: restyled terminal, quiet progress, org explorer
+
+The integrated terminal, the task progress indicator, and the org
+list/picker (`:SF org setTarget`, `:SF org setGlobalTarget`, `:SF currentFile
+diffIn`) all share one restyled look: a small, corner-anchored, rounded, blue
+float by default.
+
+### Config reference
+
+```lua
+require('sf').setup({
+  ui = {
+    accent = "#1B96FF",  -- border/title/icon color
+    border = "rounded",
+    icons = true,        -- set false if you don't have a Nerd Font
+
+    terminal = {
+      position = "bottom_right", -- "bottom_right" | "top_right" | "bottom_left" | "top_left" | "center" | "custom"
+      width = 0.45,   -- fraction of editor columns (or an absolute cell count if >= 1)
+      height = 0.35,  -- fraction of editor lines (or an absolute cell count if >= 1)
+      margin = { row = 1, col = 2 },
+    },
+
+    -- the quiet progress widget shown for "progress"-mode tasks below
+    progress = {
+      backend = "float",     -- "float" | "notify" (vim.notify/snacks/noice) | "auto"
+      spinner = { "⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏" },
+      interval_ms = 80,
+      success_timeout_ms = 3000,
+      error_timeout_ms = 10000,
+    },
+
+    -- how each kind of task is shown: "progress" (spinner only) or "terminal" (visible float)
+    task_display = {
+      default = "progress",
+      deploy = "progress",
+      retrieve = "progress",
+      test = "terminal",
+      query = "terminal",
+      anonymous = "terminal",
+    },
+
+    expand_on_error = true, -- auto-open the terminal float if a "progress" task fails
+  },
+
+  statusline = {
+    org = true,
+    trace_flags = true,
+    trace_refresh_minutes = 5,
+  },
+})
+```
+
+All of the old `term_config` keys (`dimensions`, `border`, `hl`, `blend`)
+still work exactly as before -- if you've set any of them explicitly, that
+wins over the `ui.*` defaults above (so existing configs are unaffected).
+
+### Quiet progress for deploy/retrieve
+
+Deploy and retrieve no longer pop the terminal open: they show a small
+bottom-right spinner instead, with a ✓/✗ result. `<leader><leader>` (or your
+own `toggle_term` keymap, or `:SF term output`) expands the full output at
+any time; a failed task does this automatically if `expand_on_error` is on.
+Tests, queries, and anonymous Apex still show the full terminal, since
+their output is what you're there to read.
+
+### Org explorer
+
+`:SF org setTarget`/`setGlobalTarget` and `:SF currentFile diffIn` open a
+small table (icon color-coded by org type: Salesforce blue for production,
+white for sandbox, cyan for scratch) instead of a bare list:
+
+| Key | Action |
+| --- | --- |
+| `<CR>` | select this org |
+| `<Tab>` | expand/collapse full `sf org display` detail for this org (lazy-loaded and cached per session -- it's a genuinely slow CLI call) |
+| `o` | `sf org open` this org in the browser, without closing |
+| `q` / `<Esc>` / `<BS>` | back to the list from detail, or close from the list |
+
+### Overriding colors
+
+Every highlight group is defined with `default = true`, so your colorscheme
+or your own `vim.api.nvim_set_hl(0, "SfBorder", { fg = "#your-color" })`
+(after `require('sf').setup()`, or on `ColorScheme`) always wins. Groups:
+`SfBorder`, `SfTitle`, `SfFooter`, `SfNormal`, `SfSpinner`, `SfCloudIcon`,
+`SfSuccess`, `SfError`, `SfWarn`, `SfStatusOrg`, `SfStatusProd`,
+`SfStatusSandbox`, `SfStatusScratch`, `SfStatusTrace`. The simplest way to
+rebrand everything at once is `ui.accent` in `setup()`, which most of these
+derive from by default.
 
 <br>
 

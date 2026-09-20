@@ -11,6 +11,7 @@ M.check = function()
   H.check_windows_os()
   H.check_sf_project()
   H.check_replay_debugger()
+  H.check_ui()
 end
 
 -- helper;
@@ -152,6 +153,45 @@ H.check_replay_debugger = function()
     )
   end
   vim.health.ok("Apex Replay Debugger adapter found: " .. adapter_path)
+end
+
+-- Info only: reports the restyled UI's optional-plugin status. Nothing
+-- here is required; sf.nvim works with none of these installed.
+H.check_ui = function()
+  if not vim.g.sf then
+    return vim.health.warn("sf.nvim not set up yet (require('sf').setup() not called) - skipping.")
+  end
+
+  local ui = vim.g.sf.ui or {}
+
+  local backend = (ui.progress and ui.progress.backend) or "float"
+  if backend == "auto" then
+    local ok_snacks, snacks = pcall(require, "snacks")
+    if ok_snacks and snacks.notifier then
+      backend = "auto -> notify (snacks.notifier)"
+    elseif pcall(require, "notify") then
+      backend = "auto -> notify (nvim-notify)"
+    else
+      backend = "auto -> float"
+    end
+  end
+  vim.health.info("progress backend: " .. backend)
+
+  if pcall(require, "lualine") then
+    vim.health.ok("lualine.nvim found: require('sf.statusline').lualine()/lualine_trace() are ready to use.")
+  else
+    vim.health.info("lualine.nvim not found: use require('sf.statusline').render() for a plain 'statusline' instead.")
+  end
+
+  if ui.icons ~= false then
+    vim.health.info(
+      "ui.icons is enabled (default): the terminal float, progress widget, org explorer and statusline use a Nerd Font "
+        .. "cloud glyph. If it renders as a box/question mark, set `ui.icons = false` or install a Nerd Font "
+        .. "(https://www.nerdfonts.com/)."
+    )
+  else
+    vim.health.ok("ui.icons disabled: plain text only, no Nerd Font required.")
+  end
 end
 
 return M

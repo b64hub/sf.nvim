@@ -3,6 +3,15 @@ local M = {}
 M.last_tests = ""
 M.target_org = ""
 
+--- Set the target org: updates `M.target_org` (so existing readers keep
+--- working) and the cached statusline state in `sf.state`.
+---@param alias string
+---@param meta table|nil { is_scratch, is_prod, is_sandbox, username }
+M.set_target_org = function(alias, meta)
+  M.target_org = alias
+  require("sf.state").set_target_org(alias, meta)
+end
+
 ---@param msg string
 M.show = function(msg)
   vim.notify(msg, vim.log.levels.INFO, { title = "sf.nvim" })
@@ -176,17 +185,25 @@ end
 ---@param msg string|nil
 ---@param err_msg string|nil
 ---@param cb function|nil
-M.silent_system_call = function(cmd, msg, err_msg, cb)
+---@param on_settle function|nil optional (ok, obj) callback fired right after the msg/err_msg notification, for internal use (progress handle)
+M.silent_system_call = function(cmd, msg, err_msg, cb, on_settle)
   local system_callback = function(obj)
     if obj.code ~= 0 then
       if err_msg ~= nil then
         M.show_err(err_msg)
+      end
+      if on_settle then
+        on_settle(false, obj)
       end
       return
     end
 
     if msg ~= nil then
       M.show(msg)
+    end
+
+    if on_settle then
+      on_settle(true, obj)
     end
 
     if cb ~= nil then
@@ -202,8 +219,19 @@ end
 ---@param err_msg string|nil
 ---@param cb function|nil
 M.system_call = function(cmd, msg, err_msg, cb, pre_msg)
-  M.show(pre_msg or "| Async job starts...")
-  M.silent_system_call(cmd, msg, err_msg, cb)
+  local label = pre_msg or "Async job"
+  local Progress = require("sf.ui.progress")
+  local handle = Progress.start({ msg = label })
+
+  local on_settle = function(ok)
+    if ok then
+      handle:finish(true, msg or (label .. " done"))
+    else
+      handle:finish(false, err_msg or (label .. " failed"))
+    end
+  end
+
+  M.silent_system_call(cmd, msg, err_msg, cb, on_settle)
 end
 
 M.get_apex_name = function()
