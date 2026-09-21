@@ -167,6 +167,62 @@ H.clean_org_cache = function()
   H.orgs = {}
 end
 
+--- Flip the `is_default` flag onto `alias` and off every other cached org,
+--- so the picker's `●` marker stays in sync right after a target-org
+--- change instead of only after the next `:SF org list`.
+---@param alias string
+H.mark_default = function(alias)
+  for _, r in ipairs(H.orgs) do
+    r.is_default = r.alias == alias
+  end
+end
+
+--- Write "target-org" into the project-local `.sf/config.json` (or the
+--- global `~/.sf/config.json` when `global` is true), merging into whatever
+--- is already there. Synchronous file I/O -- same config file `sf config
+--- set target-org` itself writes, without paying for a CLI/Node spinup.
+---@param alias string
+---@param global boolean
+---@return boolean ok, string|nil err
+H.write_target_org_to_config = function(alias, global)
+  local path
+  if global then
+    local home = vim.uv.os_homedir()
+    if not home then
+      return false, "could not resolve home directory"
+    end
+    path = home .. "/.sf/config.json"
+  else
+    local ok_root, root = pcall(U.get_sf_root)
+    if not ok_root or not root then
+      return false, "not in a sfdx project folder"
+    end
+    path = root .. ".sf/config.json"
+  end
+
+  local dir = vim.fs.dirname(path)
+  if vim.fn.isdirectory(dir) == 0 then
+    vim.fn.mkdir(dir, "p")
+  end
+
+  local config = {}
+  local ok_read, lines = pcall(vim.fn.readfile, path)
+  if ok_read then
+    local ok_json, parsed = pcall(vim.json.decode, table.concat(lines, "\n"))
+    if ok_json and type(parsed) == "table" then
+      config = parsed
+    end
+  end
+
+  config["target-org"] = alias
+
+  local ok_write = pcall(vim.fn.writefile, { vim.json.encode(config) }, path)
+  if not ok_write then
+    return false, "could not write " .. path
+  end
+  return true
+end
+
 H.set_target_org = function()
   if vim.tbl_isempty(H.orgs) then
     return U.show_err("No orgs available. Run :SF org list first.")
@@ -179,13 +235,12 @@ H.set_target_org = function()
     end,
     on_choice = function(record)
       local org = record.alias
-      local cmd = 'sf config set target-org "' .. org .. '"'
-      local err_msg = org .. " - set target_org failed! Not in a sfdx project folder?"
-      local cb = function()
-        U.set_target_org(org, record)
+      local ok, err = H.write_target_org_to_config(org, false)
+      if not ok then
+        return U.show_err(org .. " - set target_org failed! " .. err)
       end
-
-      U.silent_job_call(cmd, nil, err_msg, cb)
+      H.mark_default(org)
+      U.set_target_org(org, record)
     end,
   })
 end
@@ -202,13 +257,13 @@ H.set_global_target_org = function()
     end,
     on_choice = function(record)
       local org = record.alias
-      local cmd = "sf config set target-org --global " .. org
-      local msg = "Global target_org set: " .. org
-      local err_msg = string.format("Global set target_org [%s] failed!", org)
-      local cb = function()
-        U.set_target_org(org, record)
+      local ok, err = H.write_target_org_to_config(org, true)
+      if not ok then
+        return U.show_err(string.format("Global set target_org [%s] failed! %s", org, err))
       end
-      U.silent_job_call(cmd, msg, err_msg, cb)
+      H.mark_default(org)
+      U.set_target_org(org, record)
+      vim.notify("Global target_org set: " .. org, vim.log.levels.INFO)
     end,
   })
 end
@@ -309,6 +364,7 @@ Org.refresh_target_org_from_disk = function()
         break
       end
     end
+    H.mark_default(alias)
     U.set_target_org(alias, record)
   end
 end
@@ -469,5 +525,7 @@ H.find_file = function(path, target)
     end
   end
 end
+
+Org.__test = H
 
 return Org
