@@ -118,6 +118,7 @@ M.sub_cmd_tbl = {
     funcs = {
       toggle = Sf.toggle_term,
       cancel = Sf.cancel,
+      output = Sf.show_last_task_output,
     },
     impl = common_impl,
     complete = function(subcmd_arg_lead)
@@ -166,6 +167,15 @@ M.sub_cmd_tbl = {
     impl = debug_impl,
     complete = function(subcmd_arg_lead)
       return common_complete("debug", subcmd_arg_lead)
+    end,
+  },
+  status = {
+    funcs = {
+      refresh = Sf.refresh_status,
+    },
+    impl = common_impl,
+    complete = function(subcmd_arg_lead)
+      return common_complete("status", subcmd_arg_lead)
     end,
   },
   sobject = {

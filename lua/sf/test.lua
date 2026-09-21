@@ -46,7 +46,7 @@ Test.run_current_test_with_coverage = function()
     :build()
 
   U.last_tests = cmd
-  T.run(cmd, H.save_test_coverage_locally)
+  T.run(cmd, H.save_test_coverage_locally, { label = test_class_name .. "." .. test_name, category = "test" })
 end
 
 ---@param cb function|nil
@@ -75,7 +75,7 @@ Test.run_current_test = function(cb)
     :build()
 
   U.last_tests = cmd
-  T.run(cmd, cb)
+  T.run(cmd, cb, { label = test_class_name .. "." .. test_name, category = "test" })
 end
 
 Test.run_all_tests_in_this_file_with_coverage = function()
@@ -96,7 +96,7 @@ Test.run_all_tests_in_this_file_with_coverage = function()
     :build()
 
   U.last_tests = cmd
-  T.run(cmd, H.save_test_coverage_locally)
+  T.run(cmd, H.save_test_coverage_locally, { label = test_class_name, category = "test" })
 end
 
 ---@param cb function
@@ -120,7 +120,7 @@ Test.run_all_tests_in_this_file = function(cb)
     :build()
 
   U.last_tests = cmd
-  T.run(cmd, cb)
+  T.run(cmd, cb, { label = test_class_name, category = "test" })
 end
 
 Test.repeat_last_tests = function()
@@ -128,7 +128,7 @@ Test.repeat_last_tests = function()
     return U.show_warn("Last test command is empty.")
   end
 
-  T.run(U.last_tests)
+  T.run(U.last_tests, nil, { label = "Repeat last test", category = "test" })
 end
 
 Test.run_local_tests = function()
@@ -145,11 +145,11 @@ Test.run_local_tests = function()
     :build()
 
   U.last_tests = cmd
-  T.run(cmd)
+  T.run(cmd, nil, { label = "All local tests", category = "test" })
 end
 
 Test.run_all_jests = function()
-  T.run("npm run test:unit:coverage")
+  T.run("npm run test:unit:coverage", nil, { label = "Jest tests", category = "test" })
 end
 
 Test.run_jest_file = function()
@@ -157,7 +157,7 @@ Test.run_jest_file = function()
     vim.notify("Not in a jest test file", vim.log.levels.ERROR)
     return
   end
-  T.run(string.format("npm run test:unit -- -- %s", vim.fn.expand("%")))
+  T.run(string.format("npm run test:unit -- -- %s", vim.fn.expand("%")), nil, { label = "Jest " .. vim.fn.expand("%:t"), category = "test" })
 end
 
 -- helper;
@@ -286,7 +286,7 @@ P.set_keys = function()
     local cmd = create_cmd({ ["-w"] = vim.g.sf.sf_wait_time, ["-r"] = "human" })
 
     P.close()
-    T.run(cmd)
+    T.run(cmd, nil, { label = P.class .. " (" .. #P.selected_tests .. " tests)", category = "test" })
     U.last_tests = cmd
     P.selected_tests = {}
   end, { buffer = true, noremap = true })
@@ -299,7 +299,7 @@ P.set_keys = function()
     local cmd = create_cmd({ ["-w"] = vim.g.sf.sf_wait_time, ["-r"] = "human", ["-c"] = "" })
 
     P.close()
-    T.run(cmd, H.save_test_coverage_locally)
+    T.run(cmd, H.save_test_coverage_locally, { label = P.class .. " (" .. #P.selected_tests .. " tests)", category = "test" })
     U.last_tests = cmd
     P.selected_tests = {}
   end, { buffer = true, noremap = true })

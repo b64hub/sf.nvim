@@ -30,6 +30,8 @@ Sf.push_delta	sf.txt	/*Sf.push_delta*
 Sf.refresh_current_file_covered_percent	sf.txt	/*Sf.refresh_current_file_covered_percent*
 Sf.refresh_debug_breakpoint_info	sf.txt	/*Sf.refresh_debug_breakpoint_info*
 Sf.refresh_sobjects	sf.txt	/*Sf.refresh_sobjects*
+Sf.refresh_status()	sf.txt	/*Sf.refresh_status()*
+Sf.refresh_target_org_from_disk	sf.txt	/*Sf.refresh_target_org_from_disk*
 Sf.rename_apex_class_remote_and_local	sf.txt	/*Sf.rename_apex_class_remote_and_local*
 Sf.repeat_last_tests	sf.txt	/*Sf.repeat_last_tests*
 Sf.replay_debug_current_log	sf.txt	/*Sf.replay_debug_current_log*
@@ -60,6 +62,7 @@ Sf.set_current_package_dir	sf.txt	/*Sf.set_current_package_dir*
 Sf.set_global_target_org	sf.txt	/*Sf.set_global_target_org*
 Sf.set_target_org	sf.txt	/*Sf.set_target_org*
 Sf.setup()	sf.txt	/*Sf.setup()*
+Sf.show_last_task_output	sf.txt	/*Sf.show_last_task_output*
 Sf.toggle_sign	sf.txt	/*Sf.toggle_sign*
 Sf.toggle_term	sf.txt	/*Sf.toggle_term*
 Sf.uncovered_jump_backward	sf.txt	/*Sf.uncovered_jump_backward*

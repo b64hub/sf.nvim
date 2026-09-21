@@ -37,7 +37,7 @@ function Term.save_and_push(extra_params)
     cmd_builder:addParamStr(extra_params)
   end
   local cmd = cmd_builder:build()
-  t:run(cmd)
+  t:run(cmd, nil, { label = "Deploy " .. vim.fn.expand("%:t"), category = "deploy" })
 end
 
 function Term.push_delta(extra_params)
@@ -50,7 +50,7 @@ function Term.push_delta(extra_params)
     cmd_builder:addParamStr(extra_params)
   end
   local cmd = cmd_builder:build()
-  t:run(cmd)
+  t:run(cmd, nil, { label = "Deploy project", category = "deploy" })
 end
 
 function Term.retrieve(extra_params)
@@ -68,7 +68,7 @@ function Term.retrieve(extra_params)
     cmd_builder:addParamStr(extra_params)
   end
   local cmd = cmd_builder:build()
-  t:run(cmd, cb)
+  t:run(cmd, cb, { label = "Retrieve " .. vim.fn.fnamemodify(filename, ":t"), category = "retrieve" })
 end
 
 function Term.retrieve_delta(extra_params)
@@ -81,7 +81,7 @@ function Term.retrieve_delta(extra_params)
     cmd_builder:addParamStr(extra_params)
   end
   local cmd = cmd_builder:build()
-  t:run(cmd)
+  t:run(cmd, nil, { label = "Retrieve project", category = "retrieve" })
 end
 
 function Term.retrieve_package()
@@ -90,7 +90,7 @@ function Term.retrieve_package()
   end
   -- local cmd = vim.fn.expandcmd('sf project retrieve start -x "%:p" -o ') .. U.get()
   local cmd = B:new():cmd("project"):act("retrieve start"):addParams("-x", "%:p"):build()
-  t:run(cmd)
+  t:run(cmd, nil, { label = "Retrieve package", category = "retrieve" })
 end
 
 function Term.run_anonymous_stdin(use_selection)
@@ -117,7 +117,7 @@ function Term.run_anonymous_stdin(use_selection)
 
   local base_cmd = B:new():cmd("apex"):act("run"):build()
   local cmd = string.format("echo %s | %s", vim.fn.shellescape(text), base_cmd)
-  t:run(cmd)
+  t:run(cmd, nil, { label = "Anonymous Apex", category = "anonymous" })
 end
 
 function Term.run_anonymous()
@@ -126,7 +126,7 @@ function Term.run_anonymous()
   end
   -- local cmd = vim.fn.expandcmd('sf apex run -f "%:p" -o ') .. U.get()
   local cmd = B:new():cmd("apex"):act("run"):addParams("-f", "%:p"):build()
-  t:run(cmd)
+  t:run(cmd, nil, { label = "Anonymous Apex", category = "anonymous" })
 end
 
 function Term.run_query()
@@ -135,7 +135,7 @@ function Term.run_query()
   end
   -- local cmd = vim.fn.expandcmd('sf data query -f "%:p" -o ') .. U.get()
   local cmd = B:new():cmd("data"):act("query"):addParams("-f", "%:p"):build()
-  t:run(cmd)
+  t:run(cmd, nil, { label = "SOQL", category = "query" })
 end
 
 function Term.run_tooling_query()
@@ -145,7 +145,7 @@ function Term.run_tooling_query()
   -- local cmd = vim.fn.expandcmd('sf data query -t -f "%:p" -o ') .. U.get()
   local cmd =
       B:new():cmd("data"):act("query"):addParams({ ["-f"] = "%:p", ["-t"] = "" }):build()
-  t:run(cmd)
+  t:run(cmd, nil, { label = "SOQL (tooling)", category = "query" })
 end
 
 function Term.run_highlighted_soql()
@@ -165,7 +165,7 @@ function Term.run_highlighted_soql()
 
   -- local raw_cmd = string.format('sf data query -q "%s" -o %s', selected_text, U.get())
   local raw_cmd = B:new():cmd("data"):act("query"):addParamsNoExpand("-q", selected_text):build()
-  t:run(raw_cmd)
+  t:run(raw_cmd, nil, { label = "SOQL", category = "query" })
 end
 
 function Term.cancel()
@@ -177,9 +177,15 @@ function Term.go_to_sf_root()
   t:run("cd " .. root)
 end
 
-function Term.run(cmd, cb)
+function Term.run(cmd, cb, opts)
   -- local cmd = vim.fn.expandcmd(c)
-  t:run(cmd, cb)
+  t:run(cmd, cb, opts)
+end
+
+--- Show the last task's output in the SFTerm float (the "expand" action for
+--- a quiet "progress"-mode task).
+function Term.show_last_task_output()
+  t:open()
 end
 
 function Term.get_config()

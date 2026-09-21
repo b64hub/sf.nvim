@@ -76,7 +76,7 @@ H.retrieve_md = function(type, name, cb)
 
   local type_name = string.format("%s:%s", type, name)
   local cmd = B:new():cmd("project"):act("retrieve start"):addParamsNoExpand("-m", type_name):build()
-  T.run(cmd, cb)
+  T.run(cmd, cb, { label = "Retrieve " .. type_name, category = "retrieve" })
 end
 
 H.list_md_to_retrieve = function()
@@ -213,7 +213,7 @@ H.retrieve_md_type = function(type)
 
   -- local cmd = string.format('sf project retrieve start -m \'%s:*\' -o %s', type, U.target_org)
   local cmd = B:new():cmd("project"):act("retrieve start"):addParams("-m", type):build()
-  T.run(cmd)
+  T.run(cmd, nil, { label = "Retrieve " .. type, category = "retrieve" })
 end
 
 ---@param name string
@@ -326,7 +326,7 @@ H.delete_current_apex_remote_and_local = function()
 
       U.close_buf_if_file_gone(current_file)
       U.show("Apex '" .. class_name .. "' deleted from org and local")
-    end)
+    end, { label = "Delete " .. class_name, category = "deploy" })
   end)
 end
 
@@ -402,7 +402,7 @@ H.rename_apex_impl = function(old_file_path, old_name, new_name)
 
       U.show("Deleting old class '" .. old_name .. "'...")
       H.delete_old_class_after_rename(old_name)
-    end)
+    end, { label = "Deploy " .. new_name, category = "deploy" })
   end)
 end
 
