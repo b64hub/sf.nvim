@@ -293,6 +293,7 @@ helpers.store_orgs = function(data)
       is_sandbox = is_sandbox,
       is_prod = not is_scratch and not is_sandbox,
       is_default = v.isDefaultUsername == true,
+      is_default_devhub = v.isDefaultDevHubUsername == true,
       expiration_date = v.expirationDate,
     }
 
