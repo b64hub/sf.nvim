@@ -7,8 +7,11 @@ design's assumptions against the actual source — corrections are called out
 below before Step 1.
 
 Status: Steps 1–2 done (commit ad9e1fa). Steps 3–4 done (commit
-eee91dc). Step 5 done (commit a087eb7, `make test` 125/125 green). Steps
-6–7 queued.
+eee91dc). Step 5 done (commit a087eb7). Step 6 done, and Step 8's core
+piece (alias-scoped `Api.get_session`) landed early as a genuine
+prerequisite for it (commit a81a7ba, `make test` 132/132 green). Step
+8's remaining half (trace-flags view + `Debug.enable_replay_logging`
+alias support) and Step 7 still queued.
 
 ## Assumption corrections (read before Step 1)
 
