@@ -9,9 +9,10 @@ below before Step 1.
 Status: Steps 1–2 done (commit ad9e1fa). Steps 3–4 done (commit
 eee91dc). Step 5 done (commit a087eb7). Step 6 done, and Step 8's core
 piece (alias-scoped `Api.get_session`) landed early as a genuine
-prerequisite for it (commit a81a7ba, `make test` 132/132 green). Step
-8's remaining half (trace-flags view + `Debug.enable_replay_logging`
-alias support) and Step 7 still queued.
+prerequisite for it (commit a81a7ba). Step 7 done (commit 7ccff3b,
+`make test` 137/137 green). Step 8's remaining half (trace-flags view +
+`Debug.enable_replay_logging` alias support) still queued, then
+Phase 5 (native log list) and Phase 6 (limits/packages/refresh/wiring).
 
 ## Assumption corrections (read before Step 1)
 
