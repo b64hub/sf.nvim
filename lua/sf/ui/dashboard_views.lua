@@ -6,6 +6,7 @@ local org_view = require("sf.ui.org_view")
 local org_status = require("sf.sub.org_status")
 local rest_api = require("sf.sub.rest_api")
 local Org = require("sf.org")
+local Debug = require("sf.debug")
 
 --- Highlight group for a given instance status string.
 ---@param status string
@@ -17,6 +18,53 @@ local function status_highlight(status)
     return "SfWarn"
   end
   return "SfError" -- any incident/maintenance/degraded state
+end
+
+--- Parse a Salesforce datetime string (e.g. "2024-01-01T00:00:00.000+0000")
+--- into remaining minutes from now, formatted as a string.
+--- @param datetime_str string Salesforce ISO datetime string
+--- @return string formatted remaining time (e.g. "expires in 47 min", "expires in 2h", "expired")
+local function format_trace_flag_expiry(datetime_str)
+  if not datetime_str or datetime_str == "" then
+    return "no expiry"
+  end
+
+  -- Parse Salesforce datetime: "2024-01-01T00:00:00.000+0000"
+  local year, month, day, hour, minute, second = datetime_str:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
+  if not year then
+    return "invalid date"
+  end
+
+  -- Convert parsed UTC fields to Unix timestamp, correcting for local timezone
+  local parsed_table = {
+    year = tonumber(year),
+    month = tonumber(month),
+    day = tonumber(day),
+    hour = tonumber(hour),
+    min = tonumber(minute),
+    sec = tonumber(second),
+  }
+  local now = os.time()
+  local utc_now = os.date("!*t", now)
+  local local_now = os.date("*t", now)
+  utc_now.isdst = local_now.isdst
+  local offset = os.difftime(os.time(local_now), os.time(utc_now))
+  local expiry_timestamp = os.time(parsed_table) + offset
+
+  local remaining_secs = expiry_timestamp - now
+  if remaining_secs < 0 then
+    return "expired"
+  end
+
+  local remaining_mins = math.floor(remaining_secs / 60)
+  if remaining_mins < 1 then
+    return "expires soon"
+  elseif remaining_mins < 60 then
+    return string.format("expires in %d min", remaining_mins)
+  else
+    local hours = math.floor(remaining_mins / 60)
+    return string.format("expires in %dh", hours)
+  end
 end
 
 local views = {
@@ -107,6 +155,56 @@ local views = {
     render = nil,
     action = function(record, _)
       Org.open_org(record.alias)
+    end,
+  },
+  {
+    id = "trace_flags",
+    key = "t",
+    label = "Trace Flags",
+    fetch = function(record, callback)
+      rest_api.get_session(record.alias, function(session, err)
+        if not session then
+          return callback(nil, err)
+        end
+        local soql = "SELECT Id, DebugLevel.DeveloperName, ExpirationDate, TracedEntity.Name FROM TraceFlag ORDER BY ExpirationDate DESC"
+        rest_api.query(session, soql, function(records, query_err)
+          if not records then
+            return callback(nil, query_err)
+          end
+          callback(records, nil)
+        end)
+      end)
+    end,
+    render = function(_, data)
+      local lines, line_hls = {}, {}
+
+      if #data == 0 then
+        table.insert(lines, "No active trace flags.")
+        table.insert(line_hls, {})
+        return lines, line_hls
+      end
+
+      for _, flag in ipairs(data) do
+        local traced_entity = flag.TracedEntity and flag.TracedEntity.Name or "(unknown)"
+        local debug_level = flag.DebugLevel and flag.DebugLevel.DeveloperName or "(unknown)"
+        local expiry = format_trace_flag_expiry(flag.ExpirationDate)
+        local line = string.format("%s | %s | %s", traced_entity, debug_level, expiry)
+        table.insert(lines, line)
+        table.insert(line_hls, {})
+      end
+
+      return lines, line_hls
+    end,
+    action = nil,
+  },
+  {
+    id = "enable_logging",
+    key = "e",
+    label = "Enable Logging",
+    fetch = nil,
+    render = nil,
+    action = function(record, _)
+      Debug.enable_replay_logging({ alias = record.alias })
     end,
   },
 }
