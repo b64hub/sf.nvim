@@ -29,7 +29,7 @@ function explorer.pick(records, opts)
   vim.bo[buf].filetype = "SfOrgExplorer"
   org_view.paint(buf, list_lines, list_hls)
 
-  local ui = (vim.g.sf and vim.g.sf.ui) or {}
+  local ui_config = (vim.g.sf and vim.g.sf.ui) or {}
   local has_footer = vim.fn.has("nvim-0.10") == 1
 
   --- Session state for this one explorer invocation.
@@ -73,7 +73,7 @@ function explorer.pick(records, opts)
     width = geo.width,
     height = geo.height,
     style = "minimal",
-    border = ui.border or "rounded",
+    border = ui_config.border or "rounded",
     title = { { " " .. (opts.prompt or "Select org") .. " ", "SfTitle" } },
     title_pos = "left",
   }
