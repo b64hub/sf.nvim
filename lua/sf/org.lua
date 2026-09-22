@@ -38,6 +38,33 @@ function Org.open_current_file()
   util.job_call(cmd, nil, err_msg)
 end
 
+--- Set the target org for a specific alias (local or global) and update cached state.
+---@param alias string
+---@param global boolean whether to set globally (~/.sf/config.json) or locally (.sf/config.json)
+function Org.set_target_org_to(alias, global)
+  local ok, err = helpers.write_target_org_to_config(alias, global)
+  if not ok then
+    return util.show_err(
+      string.format("%s - set target_org failed! %s", alias, err)
+    )
+  end
+  helpers.mark_default(alias)
+  local record = nil
+  for _, record_entry in ipairs(helpers.orgs) do
+    if record_entry.alias == alias then
+      record = record_entry
+      break
+    end
+  end
+  util.set_target_org(alias, record)
+end
+
+--- Open a specific org (not necessarily the target_org) in the browser.
+---@param alias string
+function Org.open_org(alias)
+  helpers.open_org(alias)
+end
+
 function Org.pull_log()
   helpers.pick_org_log(util.get_plugin_folder_path() .. "logs/", function(path)
     util.try_open_file(path)

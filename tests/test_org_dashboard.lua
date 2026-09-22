@@ -1,6 +1,6 @@
 local helpers = dofile("tests/helpers.lua")
 local child = helpers.new_child_neovim()
-local expect, eq = MiniTest.expect, MiniTest.expect.equality
+local expect, eq = helpers.expect, helpers.expect.equality
 local new_set = MiniTest.new_set
 
 local test_set = new_set({
@@ -258,6 +258,114 @@ test_set["view registry: cache hit prevents re-fetch"] = function()
 
   -- Should still show count = 1 (cache hit, no re-fetch)
   eq(second_render:find("1") ~= nil, true)
+end
+
+test_set["action entry: spy function is called with record"] = function()
+  child.lua([[
+    action_spy = { called = false, record_alias = nil }
+    records = {
+      { alias = "org1", username = "user1", is_prod = true, is_default = false, is_default_devhub = false, expiration_date = nil },
+      { alias = "org2", username = "user2", is_sandbox = true, is_default = false, is_default_devhub = false, expiration_date = nil },
+    }
+    
+    -- Add an action-only view with a spy function
+    table.insert(dashboard_views, {
+      id = "test_action",
+      key = "x",
+      label = "Test Action",
+      fetch = nil,
+      render = nil,
+      action = function(record, _)
+        action_spy.called = true
+        action_spy.record_alias = record.alias
+      end,
+    })
+    
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(500, function() return false end, 50)]])
+
+  -- Move to second org
+  child.lua([[vim.api.nvim_input("j")]])
+  child.lua([[vim.wait(100, function() return false end, 50)]])
+
+  -- Press 'x' to trigger the action
+  child.lua([[vim.api.nvim_input("x")]])
+  child.lua([[vim.wait(200, function() return false end, 50)]])
+
+  local called = child.lua_get([[action_spy.called]])
+  local alias = child.lua_get([[action_spy.record_alias]])
+
+  eq(called, true)
+  eq(alias, "org2")
+end
+
+test_set["action entry: dashboard_api.repaint_list invoked after action"] = function()
+  child.lua([[
+    helpers = require("sf.org").__test
+    records = {
+      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+      { alias = "org2", username = "user2", is_sandbox = true, is_default = false, is_default_devhub = false, expiration_date = nil },
+    }
+    helpers.orgs = records
+    
+    -- Add an action that tracks if repaint_list is called
+    repaint_called = false
+    table.insert(dashboard_views, {
+      id = "toggle_default",
+      key = "t",
+      label = "Toggle Default",
+      fetch = nil,
+      render = nil,
+      action = function(record, dashboard_api)
+        helpers.mark_default(record.alias)
+        dashboard_api.repaint_list()
+        repaint_called = true
+      end,
+    })
+    
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(500, function() return false end, 50)]])
+
+  -- Move to second org
+  child.lua([[vim.api.nvim_input("j")]])
+  child.lua([[vim.wait(100, function() return false end, 50)]])
+
+  -- Press 't' to toggle default (org2 becomes default, org1 is not)
+  child.lua([[vim.api.nvim_input("t")]])
+  child.lua([[vim.wait(200, function() return false end, 50)]])
+
+  -- Verify the action was called and repaint_list was invoked
+  local repaint_called = child.lua_get([[repaint_called]])
+  eq(repaint_called, true)
+  
+  -- Verify the is_default field was mutated
+  eq(child.lua_get([[helpers.orgs[1].is_default]]), false)
+  eq(child.lua_get([[helpers.orgs[2].is_default]]), true)
+
+  -- Verify the *rendered buffer* actually reflects the new default -- this
+  -- is the real point of repaint_list: without an actual repaint, the
+  -- assertions above would still pass (they only check the underlying
+  -- data, not what the list pane shows) while the UI stayed stale.
+  local list_lines = child.lua([[
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.bo[buf].filetype == "SfOrgDashboard" then
+        local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+        if lines[1] and (lines[1]:find("org1", 1, true) or lines[1]:find("org2", 1, true)) then
+          return lines
+        end
+      end
+    end
+    return {}
+  ]])
+
+  eq(#list_lines >= 2, true)
+  -- org1's line no longer carries the default marker (●); org2's does.
+  eq(list_lines[1]:sub(1, 2), "  ")
+  expect.match(list_lines[2], "^\u{25CF} ")
 end
 
 return test_set

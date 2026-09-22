@@ -261,6 +261,17 @@ function dashboard.open(records, opts)
     return records[row]
   end
 
+  local repaint_list = function()
+    -- `session.list_buffer` is a *buffer* handle -- validate it with
+    -- nvim_buf_is_valid, not nvim_win_is_valid (a buffer id is essentially
+    -- never also a valid window id, so that check always failed silently).
+    if not vim.api.nvim_buf_is_valid(session.list_buffer) then
+      return
+    end
+    local list_lines, list_hls = org_view.render_list_lines(records)
+    org_view.paint(session.list_buffer, list_lines, list_hls)
+  end
+
   local on_cursor_move = function()
     local record = current_record()
     if record then
@@ -291,16 +302,25 @@ function dashboard.open(records, opts)
   vim.keymap.set("n", "q", close, { buffer = session.list_buffer, nowait = true })
   vim.keymap.set("n", "<Esc>", close, { buffer = session.list_buffer, nowait = true })
 
-  -- Bind view selection keys
+  -- Bind view selection keys and action keys
   for _, view_desc in ipairs(dashboard_views) do
     local view_key = view_desc.key
     local view_id = view_desc.id
     vim.keymap.set("n", view_key, function()
       local record = current_record()
       if record then
-        session.active_view_id = view_id
-        update_view_title()
-        show_view(record, view_id)
+        -- Action-only entry: invoke the action immediately
+        if view_desc.action and not view_desc.fetch and not view_desc.render then
+          local dashboard_api = {
+            repaint_list = repaint_list,
+          }
+          view_desc.action(record, dashboard_api)
+        else
+          -- Fetch+render entry: show the view
+          session.active_view_id = view_id
+          update_view_title()
+          show_view(record, view_id)
+        end
       end
     end, { buffer = session.list_buffer, nowait = true })
   end

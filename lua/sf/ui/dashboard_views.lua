@@ -5,6 +5,7 @@
 local org_view = require("sf.ui.org_view")
 local org_status = require("sf.sub.org_status")
 local rest_api = require("sf.sub.rest_api")
+local Org = require("sf.org")
 
 --- Highlight group for a given instance status string.
 ---@param status string
@@ -74,6 +75,39 @@ local views = {
       return lines, line_hls
     end,
     action = nil,
+  },
+  {
+    id = "set_local_default",
+    key = "L",
+    label = "Set Local Default",
+    fetch = nil,
+    render = nil,
+    action = function(record, dashboard_api)
+      Org.set_target_org_to(record.alias, false)
+      dashboard_api.repaint_list()
+    end,
+  },
+  {
+    id = "set_global_default",
+    key = "G",
+    label = "Set Global Default",
+    fetch = nil,
+    render = nil,
+    action = function(record, dashboard_api)
+      Org.set_target_org_to(record.alias, true)
+      dashboard_api.repaint_list()
+      vim.notify("Global target_org set: " .. record.alias, vim.log.levels.INFO)
+    end,
+  },
+  {
+    id = "open_org",
+    key = "o",
+    label = "Open",
+    fetch = nil,
+    render = nil,
+    action = function(record, _)
+      Org.open_org(record.alias)
+    end,
   },
 }
 
