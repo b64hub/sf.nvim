@@ -160,6 +160,7 @@ M.sub_cmd_tbl = {
       refresh = Sf.refresh_debug_breakpoint_info,
       enable = Sf.enable_replay_debug_logging,
       disable = Sf.disable_replay_debug_logging,
+      toggle = Sf.toggle_replay_debug_logging,
       test = Sf.run_test_and_replay_debug,
       installAdapter = Sf.install_replay_debug_adapter,
       enableFor = Sf.pick_user_and_enable_replay_debug_logging,

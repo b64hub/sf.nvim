@@ -306,6 +306,12 @@ Sf.pick_user_and_enable_replay_debug_logging = Debug.pick_user_and_enable_replay
 --- user).
 Sf.disable_replay_debug_logging = Debug.disable_replay_logging
 
+--- Enable replay logging if none is active for the target org, else
+--- disable it -- prompts via `vim.ui.select`, same as clicking the lualine
+--- trace-flag component. Bound to `<leader>sflt` by default (see
+--- |sf.enable_hotkeys|) and to `:SF debug toggle`.
+Sf.toggle_replay_debug_logging = Debug.toggle_replay_logging
+
 --- Run the Apex test under the cursor, then download and launch the newest
 --- log produced by that run with the Apex Replay Debugger.
 Sf.run_test_and_replay_debug = Debug.run_test_and_replay

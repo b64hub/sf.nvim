@@ -1,46 +1,46 @@
-local U = require("sf.util")
-local B = require("sf.sub.cmd_builder")
+local util = require("sf.util")
+local cmd_builder = require("sf.sub.cmd_builder")
 
-local H = {}
+local helpers = {}
 local Org = {}
 
 function Org.fetch_org_list()
-  H.fetch_org_list()
+  helpers.fetch_org_list()
 end
 
 function Org.set_target_org()
-  H.set_target_org()
+  helpers.set_target_org()
 end
 
 function Org.set_global_target_org()
-  H.set_global_target_org()
+  helpers.set_global_target_org()
 end
 
 function Org.diff_in_target_org()
-  H.diff_in_target_org()
+  helpers.diff_in_target_org()
 end
 
 function Org.diff_in_org()
-  H.diff_in_org()
+  helpers.diff_in_org()
 end
 
 function Org.open()
-  -- local cmd = 'sf org open -o ' .. U.get()
-  local cmd = B:new():cmd("org"):act("open"):build()
+  -- local cmd = 'sf org open -o ' .. util.get()
+  local cmd = cmd_builder:new():cmd("org"):act("open"):build()
   local err_msg = "Command failed: " .. cmd
-  U.job_call(cmd, nil, err_msg)
+  util.job_call(cmd, nil, err_msg)
 end
 
 function Org.open_current_file()
-  -- local cmd = vim.fn.expandcmd('sf org open --source-file "%:p" -o ') .. U.get()
-  local cmd = B:new():cmd("org"):act("open"):addParams("-f", "%:p"):build()
+  -- local cmd = vim.fn.expandcmd('sf org open --source-file "%:p" -o ') .. util.get()
+  local cmd = cmd_builder:new():cmd("org"):act("open"):addParams("-f", "%:p"):build()
   local err_msg = "Command failed: " .. cmd
-  U.job_call(cmd, nil, err_msg)
+  util.job_call(cmd, nil, err_msg)
 end
 
 function Org.pull_log()
-  H.pick_org_log(U.get_plugin_folder_path() .. "logs/", function(path)
-    U.try_open_file(path)
+  helpers.pick_org_log(util.get_plugin_folder_path() .. "logs/", function(path)
+    util.try_open_file(path)
   end)
 end
 
@@ -50,7 +50,7 @@ end
 ---@param dir string absolute directory to download the log into (created if missing)
 ---@param on_done fun(path: string) called with the downloaded log's local path
 function Org.pick_log(dir, on_done)
-  H.pick_org_log(dir, on_done)
+  helpers.pick_org_log(dir, on_done)
 end
 
 --- Download a single log by Id into `dir` (created if missing).
@@ -58,7 +58,7 @@ end
 --- @param dir string
 --- @param on_done fun(path: string)
 function Org.download_log(log_id, dir, on_done)
-  H.download_log(log_id, dir, on_done)
+  helpers.download_log(log_id, dir, on_done)
 end
 
 -- helpers;
@@ -66,31 +66,31 @@ end
 ---@param log_id string
 ---@param dir string
 ---@param on_done fun(path: string)
-H.download_log = function(log_id, dir, on_done)
+helpers.download_log = function(log_id, dir, on_done)
   if vim.fn.isdirectory(dir) == 0 then
     vim.fn.mkdir(dir, "-p")
   end
-  U.show("Downloading log...")
-  local get_cmd = B:new()
+  util.show("Downloading log...")
+  local get_cmd = cmd_builder:new()
       :cmd("apex")
       :act("get")
       :subact("log")
       :addParams("-i", log_id)
       :addParams("-d", dir)
       :buildAsTable()
-  U.silent_system_call(get_cmd, nil, "Failed to get logs from org", function()
+  util.silent_system_call(get_cmd, nil, "Failed to get logs from org", function()
     on_done(dir .. log_id .. ".log")
   end)
 end
 
 ---@param dir string
 ---@param on_done fun(path: string)
-H.pick_org_log = function(dir, on_done)
-  if U.is_empty_str(U.target_org) then
-    return U.show_err("Target_org empty!")
+helpers.pick_org_log = function(dir, on_done)
+  if util.is_empty_str(util.target_org) then
+    return util.show_err("Target_org empty!")
   end
-  if not U.is_installed("fzf-lua") then
-    return U.show_err("fzf-lua is not installed. Need it to show the list.")
+  if not util.is_installed("fzf-lua") then
+    return util.show_err("fzf-lua is not installed. Need it to show the list.")
   end
 
   local log_id
@@ -98,22 +98,22 @@ H.pick_org_log = function(dir, on_done)
   local on_list = function(obj)
     local ok, log_table = pcall(vim.json.decode, obj.stdout, {})
     if not ok then
-      return U.show_err("Failed to parse log JSON!")
+      return util.show_err("Failed to parse log JSON!")
     end
 
     local logs = {}
     local log_names = {}
 
     if #log_table["result"] == 0 then
-      return U.show_warn("No logs found in org")
+      return util.show_warn("No logs found in org")
     end
 
     for _, v in ipairs(log_table["result"]) do
       local name = string.format(
-        "%s | %s | %s bytes | %s",
+        "%s | %s | %s | %s",
         v["LogUser"]["Name"],
         string.gsub(v["StartTime"], "T", " "),
-        v["LogLength"],
+        util.format_bytes(v["LogLength"]),
         v["Status"]
       )
       table.insert(log_names, name)
@@ -135,7 +135,7 @@ H.pick_org_log = function(dir, on_done)
         local contents = {}
         local prepend_char = ""
         vim.tbl_map(function(x)
-          table.insert(contents, prepend_char .. U.table_to_string_lines(logs[x]))
+          table.insert(contents, prepend_char .. util.table_to_string_lines(logs[x]))
           prepend_char = "\n"
         end, items)
         return contents
@@ -143,36 +143,36 @@ H.pick_org_log = function(dir, on_done)
       actions = {
         ["default"] = function(selected)
           log_id = logs[selected[1]]["Id"]
-          H.download_log(log_id, dir, on_done)
+          helpers.download_log(log_id, dir, on_done)
         end,
       },
     })
   end
 
-  local cmd_tbl = B:new():cmd("apex"):act("list"):subact("log"):addParams("--json"):buildAsTable()
-  U.system_call(cmd_tbl, nil, "Failed to get logs from org", on_list, "Querying logs...")
+  local cmd_tbl = cmd_builder:new():cmd("apex"):act("list"):subact("log"):addParams("--json"):buildAsTable()
+  util.system_call(cmd_tbl, nil, "Failed to get logs from org", on_list, "Querying logs...")
 end
 
-H.orgs = {} -- array of { alias, username, is_scratch, is_sandbox, is_prod, is_default, expiration_date }
+helpers.orgs = {} -- array of { alias, username, is_scratch, is_sandbox, is_prod, is_default, expiration_date }
 
 --- Open a specific org (not necessarily the target_org) in the browser.
 ---@param alias string
-H.open_org = function(alias)
-  local cmd = B:new():cmd("org"):act("open"):set_org(alias):build()
+helpers.open_org = function(alias)
+  local cmd = cmd_builder:new():cmd("org"):act("open"):set_org(alias):build()
   local err_msg = "Command failed: " .. cmd
-  U.job_call(cmd, nil, err_msg)
+  util.job_call(cmd, nil, err_msg)
 end
 
-H.clean_org_cache = function()
-  H.orgs = {}
+helpers.clean_org_cache = function()
+  helpers.orgs = {}
 end
 
 --- Flip the `is_default` flag onto `alias` and off every other cached org,
 --- so the picker's `●` marker stays in sync right after a target-org
 --- change instead of only after the next `:SF org list`.
 ---@param alias string
-H.mark_default = function(alias)
-  for _, r in ipairs(H.orgs) do
+helpers.mark_default = function(alias)
+  for _, r in ipairs(helpers.orgs) do
     r.is_default = r.alias == alias
   end
 end
@@ -184,7 +184,7 @@ end
 ---@param alias string
 ---@param global boolean
 ---@return boolean ok, string|nil err
-H.write_target_org_to_config = function(alias, global)
+helpers.write_target_org_to_config = function(alias, global)
   local path
   if global then
     local home = vim.uv.os_homedir()
@@ -193,7 +193,7 @@ H.write_target_org_to_config = function(alias, global)
     end
     path = home .. "/.sf/config.json"
   else
-    local ok_root, root = pcall(U.get_sf_root)
+    local ok_root, root = pcall(util.get_sf_root)
     if not ok_root or not root then
       return false, "not in a sfdx project folder"
     end
@@ -223,53 +223,53 @@ H.write_target_org_to_config = function(alias, global)
   return true
 end
 
-H.set_target_org = function()
-  if vim.tbl_isempty(H.orgs) then
-    return U.show_err("No orgs available. Run :SF org list first.")
+helpers.set_target_org = function()
+  if vim.tbl_isempty(helpers.orgs) then
+    return util.show_err("No orgs available. Run :SF org list first.")
   end
 
-  require("sf.ui.org_explorer").pick(H.orgs, {
+  require("sf.ui.org_explorer").pick(helpers.orgs, {
     prompt = "Local target_org",
     on_open = function(record)
-      H.open_org(record.alias)
+      helpers.open_org(record.alias)
     end,
     on_choice = function(record)
       local org = record.alias
-      local ok, err = H.write_target_org_to_config(org, false)
+      local ok, err = helpers.write_target_org_to_config(org, false)
       if not ok then
-        return U.show_err(org .. " - set target_org failed! " .. err)
+        return util.show_err(org .. " - set target_org failed! " .. err)
       end
-      H.mark_default(org)
-      U.set_target_org(org, record)
+      helpers.mark_default(org)
+      util.set_target_org(org, record)
     end,
   })
 end
 
-H.set_global_target_org = function()
-  if vim.tbl_isempty(H.orgs) then
-    return U.show_err("No orgs available. Run :SF org list first.")
+helpers.set_global_target_org = function()
+  if vim.tbl_isempty(helpers.orgs) then
+    return util.show_err("No orgs available. Run :SF org list first.")
   end
 
-  require("sf.ui.org_explorer").pick(H.orgs, {
+  require("sf.ui.org_explorer").pick(helpers.orgs, {
     prompt = "Global target_org",
     on_open = function(record)
-      H.open_org(record.alias)
+      helpers.open_org(record.alias)
     end,
     on_choice = function(record)
       local org = record.alias
-      local ok, err = H.write_target_org_to_config(org, true)
+      local ok, err = helpers.write_target_org_to_config(org, true)
       if not ok then
-        return U.show_err(string.format("Global set target_org [%s] failed! %s", org, err))
+        return util.show_err(string.format("Global set target_org [%s] failed! %s", org, err))
       end
-      H.mark_default(org)
-      U.set_target_org(org, record)
+      helpers.mark_default(org)
+      util.set_target_org(org, record)
       vim.notify("Global target_org set: " .. org, vim.log.levels.INFO)
     end,
   })
 end
 
 ---@param data string
-H.store_orgs = function(data)
+helpers.store_orgs = function(data)
   local s = ""
   for _, v in ipairs(data) do
     s = s .. v
@@ -296,38 +296,40 @@ H.store_orgs = function(data)
       expiration_date = v.expirationDate,
     }
 
-    if record.is_default then
-      U.set_target_org(alias, record)
-    end
-
-    table.insert(H.orgs, record)
+    table.insert(helpers.orgs, record)
   end
+
+  -- `isDefaultUsername` above only reflects the *global* default on recent
+  -- `sf` CLI versions, not a project-local `target-org` -- resolve the
+  -- statusline's org from disk instead, now that `helpers.orgs` has metadata to
+  -- match the alias against.
+  Org.refresh_target_org_from_disk()
 end
 
-H.fetch_and_store_orgs = function()
+helpers.fetch_and_store_orgs = function()
   vim.fn.jobstart("sf org list --json --skip-connection-status", {
     stdout_buffered = true,
     on_stdout = function(_, data)
-      H.store_orgs(data)
+      helpers.store_orgs(data)
     end,
   })
 end
 
-H.fetch_org_list = function()
-  U.is_sf_cmd_installed()
+helpers.fetch_org_list = function()
+  util.is_sf_cmd_installed()
 
-  H.clean_org_cache()
-  H.fetch_and_store_orgs()
+  helpers.clean_org_cache()
+  helpers.fetch_and_store_orgs()
 end
 
 --- Read "target-org" from the project's `.sf/config.json`, falling back to
 --- the global `~/.sf/config.json`. File reads only, no `sf` CLI call, so
 --- this is cheap enough to run on `FocusGained`/`DirChanged`.
 ---@return string|nil
-H.read_target_org_from_config_files = function()
+helpers.read_target_org_from_config_files = function()
   local candidates = {}
 
-  local ok_root, root = pcall(U.get_sf_root)
+  local ok_root, root = pcall(util.get_sf_root)
   if ok_root and root then
     table.insert(candidates, root .. ".sf/config.json")
   end
@@ -355,57 +357,57 @@ end
 --- files rather than shelling out. Safe to call frequently (e.g. on
 --- `FocusGained`); never errors.
 Org.refresh_target_org_from_disk = function()
-  local ok, alias = pcall(H.read_target_org_from_config_files)
-  if ok and alias and alias ~= U.target_org then
+  local ok, alias = pcall(helpers.read_target_org_from_config_files)
+  if ok and alias and alias ~= util.target_org then
     local record
-    for _, r in ipairs(H.orgs) do
+    for _, r in ipairs(helpers.orgs) do
       if r.alias == alias then
         record = r
         break
       end
     end
-    H.mark_default(alias)
-    U.set_target_org(alias, record)
+    helpers.mark_default(alias)
+    util.set_target_org(alias, record)
   end
 end
 
-H.diff_in_target_org = function()
-  if U.is_empty_str(U.target_org) then
-    return U.show_err("Target_org empty!")
+helpers.diff_in_target_org = function()
+  if util.is_empty_str(util.target_org) then
+    return util.show_err("Target_org empty!")
   end
 
-  H.diff_in(U.target_org)
+  helpers.diff_in(util.target_org)
 end
 
-H.diff_in_org = function()
-  if vim.tbl_isempty(H.orgs) then
-    return U.show_err("No orgs available. Run :SF org list first.")
+helpers.diff_in_org = function()
+  if vim.tbl_isempty(helpers.orgs) then
+    return util.show_err("No orgs available. Run :SF org list first.")
   end
 
-  require("sf.ui.org_explorer").pick(H.orgs, {
+  require("sf.ui.org_explorer").pick(helpers.orgs, {
     prompt = "Diff in org",
     on_open = function(record)
-      H.open_org(record.alias)
+      helpers.open_org(record.alias)
     end,
     on_choice = function(record)
-      H.diff_in(record.alias)
+      helpers.diff_in(record.alias)
     end,
   })
 end
 
 ---@param org string
-H.diff_in = function(org)
+helpers.diff_in = function(org)
   local file_name = vim.fn.expand("%:t")
-  local metadataType = H.get_metadata_type(vim.fn.expand("%:p"))
-  local file_name_no_ext = H.get_file_name_without_extension(file_name)
-  local temp_path = U.get_plugin_folder_path() .. "diffs/"
+  local metadataType = helpers.get_metadata_type(vim.fn.expand("%:p"))
+  local file_name_no_ext = helpers.get_file_name_without_extension(file_name)
+  local temp_path = util.get_plugin_folder_path() .. "diffs/"
 
   -- Create diffs folder if it doesn't exist
   if vim.fn.isdirectory(temp_path) == 0 then
     vim.fn.mkdir(temp_path, "p")
   end
 
-  local cmd = B:new()
+  local cmd = cmd_builder:new()
       :cmd("project")
       :act("retrieve start")
       :addParams({
@@ -424,20 +426,20 @@ H.diff_in = function(org)
     end,
     on_exit = function(_, code)
       if code ~= 0 then
-        return U.show_err("Retrieve failed: " .. org)
+        return util.show_err("Retrieve failed: " .. org)
       end
 
       local json_str = table.concat(stdout_data, "\n")
       local ok, parsed = pcall(vim.fn.json_decode, json_str)
       if not ok or not parsed then
-        return U.show_err("Retrieve failed: could not parse sf CLI output")
+        return util.show_err("Retrieve failed: could not parse sf CLI output")
       end
 
       local files = (parsed.result or {}).files or {}
       local retrieved_file = nil
       for _, f in ipairs(files) do
         if f.state == "Failed" then
-          return U.show_err("Retrieve failed: " .. (f.error or "unknown error"))
+          return util.show_err("Retrieve failed: " .. (f.error or "unknown error"))
         end
         if f.filePath and vim.fn.fnamemodify(f.filePath, ":t") == file_name then
           retrieved_file = f.filePath
@@ -446,11 +448,11 @@ H.diff_in = function(org)
 
       -- fallback for edge cases where filePath doesn't match directly
       if not retrieved_file then
-        retrieved_file = H.find_file(temp_path, file_name)
+        retrieved_file = helpers.find_file(temp_path, file_name)
       end
 
       if not retrieved_file then
-        return U.show_err("Retrieve succeeded but file not found locally")
+        return util.show_err("Retrieve succeeded but file not found locally")
       end
 
       vim.notify("Retrieve success: " .. org, vim.log.levels.INFO)
@@ -462,13 +464,13 @@ end
 
 ---@param fileName string
 ---@return any
-H.get_file_name_without_extension = function(fileName)
+helpers.get_file_name_without_extension = function(fileName)
   -- (.-) makes the match non-greedy
   -- see https://www.lua.org/manual/5.3/manual.html#6.4.1
   return fileName:match("(.-)%.%w+%-meta%.xml$") or fileName:match("(.-)%.[^%.]+$")
 end
 
-H.metadata_types = {
+helpers.metadata_types = {
   ["lwc"] = "LightningComponentBundle",
   ["aura"] = "AuraDefinitionBundle",
   ["classes"] = "ApexClass",
@@ -491,8 +493,8 @@ H.metadata_types = {
 
 ---@param filePath string
 ---@return string | nil
-H.get_metadata_type = function(filePath)
-  for key, metadataType in pairs(H.metadata_types) do
+helpers.get_metadata_type = function(filePath)
+  for key, metadataType in pairs(helpers.metadata_types) do
     if filePath:find(key) then
       return metadataType
     end
@@ -503,7 +505,7 @@ end
 ---@param path string
 ---@param target string
 ---@return string|nil
-H.find_file = function(path, target)
+helpers.find_file = function(path, target)
   local scanner = vim.loop.fs_scandir(path)
   -- if scanner is nil, then path is not a valid dir
   if scanner then
@@ -513,7 +515,7 @@ H.find_file = function(path, target)
     end
     while file do
       if type == "directory" then
-        local found = H.find_file(path .. file, target)
+        local found = helpers.find_file(path .. file, target)
         if found then
           return found
         end
@@ -526,6 +528,6 @@ H.find_file = function(path, target)
   end
 end
 
-Org.__test = H
+Org.__test = helpers
 
 return Org

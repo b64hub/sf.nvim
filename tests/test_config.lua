@@ -287,13 +287,17 @@ T["setup()"]["SFTerm filetype has its user-keys always defined by autocmd despit
 end
 
 T["setup()"]["default has a VimEnter event defined"] = function()
-  eq(#child.api.nvim_get_autocmds({ event = "VimEnter", group = "SF" }), 1)
+  -- one for `fetch_org_list_at_nvim_start`, one for the disk-based
+  -- target-org refresh that always runs (see config_auto_cmd.lua)
+  eq(#child.api.nvim_get_autocmds({ event = "VimEnter", group = "SF" }), 2)
 end
 
 T["setup()"]["the VimEnter event can be disabled by custom config"] = function()
   child.sf_setup({ fetch_org_list_at_nvim_start = false })
 
-  eq(#child.api.nvim_get_autocmds({ event = "VimEnter", group = "SF" }), 0)
+  -- only `fetch_org_list_at_nvim_start`'s is removed; the disk-based
+  -- target-org refresh isn't gated by it
+  eq(#child.api.nvim_get_autocmds({ event = "VimEnter", group = "SF" }), 1)
 end
 
 T["setup()"]["only the placeholder command in non-sf-project dir"] = function()
