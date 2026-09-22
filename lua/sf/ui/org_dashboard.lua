@@ -6,6 +6,7 @@
 
 local Layout = require("sf.ui.layout")
 local org_view = require("sf.ui.org_view")
+local dashboard_views = require("sf.ui.dashboard_views")
 
 local dashboard = {}
 
@@ -42,7 +43,12 @@ function dashboard.open(records, opts)
   }
 
   local footer_for = function()
-    return " <CR> open · q close "
+    local parts = {}
+    for _, view_desc in ipairs(dashboard_views) do
+      table.insert(parts, view_desc.key .. " " .. view_desc.label)
+    end
+    table.insert(parts, "q close")
+    return " " .. table.concat(parts, " · ") .. " "
   end
 
   local geometry_pair = Layout.float_geometry_pair({
@@ -68,6 +74,17 @@ function dashboard.open(records, opts)
     list_win_opts.footer_pos = "left"
   end
 
+  local get_view_title = function()
+    local active_view = nil
+    for _, view_desc in ipairs(dashboard_views) do
+      if view_desc.id == session.active_view_id then
+        active_view = view_desc
+        break
+      end
+    end
+    return active_view and (" " .. active_view.label .. " ") or " View "
+  end
+
   local view_win_opts = {
     relative = "editor",
     row = geometry_pair.right.row,
@@ -76,7 +93,7 @@ function dashboard.open(records, opts)
     height = geometry_pair.right.height,
     style = "minimal",
     border = ui_config.border or "rounded",
-    title = { { " Details ", "SfTitle" } },
+    title = { { get_view_title(), "SfTitle" } },
     title_pos = "left",
   }
   if has_footer then
@@ -112,33 +129,99 @@ function dashboard.open(records, opts)
     end
   end
 
+  local get_view_descriptor = function(view_id)
+    for _, view_desc in ipairs(dashboard_views) do
+      if view_desc.id == view_id then
+        return view_desc
+      end
+    end
+    return nil
+  end
+
+  -- The title was only set once at window-creation time (defaulting to
+  -- whatever view was active then); refresh it whenever the active view
+  -- changes so it doesn't go stale after a view-key switch.
+  local update_view_title = function()
+    if not vim.api.nvim_win_is_valid(session.view_window) then
+      return
+    end
+    local cfg = {
+      relative = "editor",
+      row = geometry_pair.right.row,
+      col = geometry_pair.right.col,
+      width = geometry_pair.right.width,
+      height = geometry_pair.right.height,
+      title = { { get_view_title(), "SfTitle" } },
+      title_pos = "left",
+    }
+    if has_footer then
+      cfg.footer = { { footer_for(), "SfFooter" } }
+      cfg.footer_pos = "left"
+    end
+    vim.api.nvim_win_set_config(session.view_window, cfg)
+  end
+
   local paint_view = function(record, frame)
     if not vim.api.nvim_win_is_valid(session.view_window) then
       return
     end
     local cache_key = record.alias .. ":" .. session.active_view_id
     local cached = session.cache[cache_key]
-    local detail = cached and cached.data or nil
+    local view_data = cached and cached.data or nil
     local fetch_err = cached and cached.err or nil
 
-    local detail_lines, detail_hls = org_view.render_detail_lines(record, frame, detail, fetch_err)
-    org_view.paint(session.view_buffer, detail_lines, detail_hls)
+    local view_desc = get_view_descriptor(session.active_view_id)
+    if not view_desc then
+      return
+    end
+
+    local lines, line_hls
+    if fetch_err then
+      lines = { "Failed to load: " .. fetch_err }
+      line_hls = { { { group = "SfError", col_start = 0, col_end = #lines[1] } } }
+    elseif not view_data and cached and cached.fetching then
+      local spinner = org_view.SPINNER_FRAMES[(frame % #org_view.SPINNER_FRAMES) + 1]
+      lines = { spinner .. " Loading..." }
+      line_hls = { { { group = "SfSpinner", col_start = 0, col_end = #lines[1] } } }
+    elseif view_data then
+      lines, line_hls = view_desc.render(record, view_data)
+    else
+      lines = { "" }
+      line_hls = { {} }
+    end
+
+    org_view.paint(session.view_buffer, lines, line_hls)
   end
 
-  local fetch_detail = function(record)
-    local cache_key = record.alias .. ":" .. session.active_view_id
+  local show_view = function(record, view_id)
+    local cache_key = record.alias .. ":" .. view_id
     local cached = session.cache[cache_key]
 
+    -- Cache hit: paint immediately, no refetch
     if cached and cached.data then
       paint_view(record, 0)
       return
     end
 
+    -- Already fetching: don't start another fetch
     if cached and cached.fetching then
       return
     end
 
+    local view_desc = get_view_descriptor(view_id)
+    if not view_desc then
+      return
+    end
+
     local frame = 0
+    -- ponytail: switching views doesn't bump `generation` (only close()
+    -- does), so rapid view-switching while a previous view's fetch is
+    -- still in flight can have that fetch's completion callback steal
+    -- the shared spinner_timer slot from whatever view is now active.
+    -- End state is still correct (each fetch paints its own cache_key
+    -- once done) -- worst case is a spinner freezing a frame early.
+    -- Upgrade path: a per-cache-key generation/timer instead of one
+    -- shared slot, if this ever turns out to be more than cosmetic.
     local current_gen = session.generation
 
     stop_spinner()
@@ -158,7 +241,7 @@ function dashboard.open(records, opts)
       end)
     )
 
-    org_view.fetch_org_display(record, function(result, err)
+    view_desc.fetch(record, function(result, err)
       if current_gen ~= session.generation then
         return
       end
@@ -181,7 +264,7 @@ function dashboard.open(records, opts)
   local on_cursor_move = function()
     local record = current_record()
     if record then
-      fetch_detail(record)
+      show_view(record, session.active_view_id)
     end
   end
 
@@ -208,7 +291,21 @@ function dashboard.open(records, opts)
   vim.keymap.set("n", "q", close, { buffer = session.list_buffer, nowait = true })
   vim.keymap.set("n", "<Esc>", close, { buffer = session.list_buffer, nowait = true })
 
-  -- Fetch detail for the first org
+  -- Bind view selection keys
+  for _, view_desc in ipairs(dashboard_views) do
+    local view_key = view_desc.key
+    local view_id = view_desc.id
+    vim.keymap.set("n", view_key, function()
+      local record = current_record()
+      if record then
+        session.active_view_id = view_id
+        update_view_title()
+        show_view(record, view_id)
+      end
+    end, { buffer = session.list_buffer, nowait = true })
+  end
+
+  -- Fetch view for the first org
   on_cursor_move()
 
   -- Make sure focus is on the list window
