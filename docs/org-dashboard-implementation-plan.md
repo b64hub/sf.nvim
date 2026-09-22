@@ -7,7 +7,8 @@ design's assumptions against the actual source — corrections are called out
 below before Step 1.
 
 Status: Steps 1–2 done (commit ad9e1fa). Steps 3–4 done (commit
-eee91dc, `make test` 122/122 green). Steps 5–7 in progress. Rest queued.
+eee91dc). Step 5 done (commit a087eb7, `make test` 125/125 green). Steps
+6–7 queued.
 
 ## Assumption corrections (read before Step 1)
 
