@@ -19,6 +19,12 @@ convention — do not reuse it in new code.
   `local helpers = {}`.
 - Module return table: name it after the module's purpose or just keep it
   local and return it directly, not a bare `M`.
+- When you're already editing a file for something else, rename any
+  `U`/`M`/`H`/`B`/`T`/etc. single- or double-letter identifiers it still has
+  to descriptive names as part of that change (whole file, not just the
+  lines you touched) — this is a case where AGENTS.md wins over the old
+  in-file pattern. Don't go out of your way to open unrelated files just to
+  rename them.
 
 ## General style
 

@@ -80,6 +80,19 @@ M.set_auto_cmd_and_try_set_default_keys = function()
     end,
   })
 
+  -- Same, but at startup: neither of the above fire on a fresh session, and
+  -- `sf org list`'s `isDefaultUsername` (used by `fetch_org_list` below)
+  -- doesn't reflect a project-local `target-org` on current `sf` CLI
+  -- versions -- so without this the statusline org stays blank until the
+  -- first focus toggle/`:cd`. Cheap file read, so always on regardless of
+  -- `fetch_org_list_at_nvim_start`.
+  vim.api.nvim_create_autocmd("VimEnter", {
+    group = sf_group,
+    callback = function()
+      pcall(require("sf").refresh_target_org_from_disk)
+    end,
+  })
+
   -- Refresh active trace flags on org change, and periodically while Nvim
   -- has focus (never while unfocused -- no point polling if you're away).
   if vim.g.sf.statusline.trace_flags then

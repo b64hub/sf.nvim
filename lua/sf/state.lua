@@ -1,9 +1,9 @@
 -- Central cached state for org/trace-flag info, read by the statusline.
 -- No I/O happens here: producers elsewhere (org.lua, debug.lua) update this
 -- and fire events; the statusline only ever reads the cache.
-local M = {}
+local state = {}
 
-local H = {
+local cache = {
   org = { alias = "", is_scratch = nil, is_prod = nil, is_sandbox = nil, username = nil },
   trace_flags = {}, -- { { id, log_type, debug_level, expires_at_epoch } }
   user_id_cache = {}, -- session.username -> User.Id, avoids a query per refresh
@@ -13,11 +13,11 @@ local H = {
 --- fires `User SfOrgChanged` and schedules a `redrawstatus`.
 ---@param alias string
 ---@param meta table|nil { is_scratch, is_prod, is_sandbox, username }
-function M.set_target_org(alias, meta)
+function state.set_target_org(alias, meta)
   meta = meta or {}
-  local changed = H.org.alias ~= alias
+  local changed = cache.org.alias ~= alias
 
-  H.org = {
+  cache.org = {
     alias = alias,
     is_scratch = meta.is_scratch,
     is_prod = meta.is_prod,
@@ -26,6 +26,10 @@ function M.set_target_org(alias, meta)
   }
 
   if changed then
+    -- Trace flags are per-org; don't keep showing the previous org's status
+    -- while the async refetch (triggered by the `SfOrgChanged` autocmd) is
+    -- in flight, or if it fails silently.
+    cache.trace_flags = {}
     vim.api.nvim_exec_autocmds("User", { pattern = "SfOrgChanged", data = { alias = alias } })
     vim.schedule(function()
       pcall(vim.cmd.redrawstatus)
@@ -34,13 +38,13 @@ function M.set_target_org(alias, meta)
 end
 
 --- @return table cached { alias, is_scratch, is_prod, is_sandbox, username }
-function M.get()
-  return H.org
+function state.get()
+  return cache.org
 end
 
 --- @return table[] cached active TraceFlags: { id, log_type, debug_level, expires_at_epoch }
-function M.get_trace_flags()
-  return H.trace_flags
+function state.get_trace_flags()
+  return cache.trace_flags
 end
 
 --- Parse a Salesforce datetime string (e.g. "2024-01-01T00:00:00.000+0000")
@@ -68,7 +72,7 @@ end
 ---@param session table { username, ... }
 ---@param cb fun(user_id: string|nil)
 local function resolve_user_id(session, cb)
-  local cached = H.user_id_cache[session.username]
+  local cached = cache.user_id_cache[session.username]
   if cached then
     return cb(cached)
   end
@@ -78,7 +82,7 @@ local function resolve_user_id(session, cb)
   Api.query_std(session, soql, function(records)
     local id = records and records[1] and records[1].Id
     if id then
-      H.user_id_cache[session.username] = id
+      cache.user_id_cache[session.username] = id
     end
     cb(id)
   end)
@@ -88,7 +92,7 @@ end
 --- user. Never blocks, never surfaces an error to the user -- the
 --- statusline must stay silent and simply keep the last known value on
 --- failure. Safe to call often (event-driven + a background timer).
-function M.refresh_trace_flags()
+function state.refresh_trace_flags()
   local Api = require("sf.sub.rest_api")
   if not Api.has_curl() then
     return
@@ -127,7 +131,7 @@ function M.refresh_trace_flags()
           end
         end
 
-        H.trace_flags = flags
+        cache.trace_flags = flags
         vim.schedule(function()
           pcall(vim.cmd.redrawstatus)
         end)
@@ -136,4 +140,6 @@ function M.refresh_trace_flags()
   end)
 end
 
-return M
+state.__test = cache
+
+return state

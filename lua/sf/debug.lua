@@ -662,6 +662,27 @@ Debug.disable_replay_logging = function(user)
   end)
 end
 
+--- Ask (via `vim.ui.select`) whether to enable or disable replay logging,
+--- based on whether a TraceFlag is currently active -- the same prompt the
+--- lualine trace-flag component uses on click, now also reachable without a
+--- mouse (see |Sf.toggle_replay_debug_logging|).
+Debug.toggle_replay_logging = function()
+  local flags = require("sf.state").get_trace_flags()
+  if #flags > 0 then
+    vim.ui.select({ "Yes", "No" }, { prompt = "Disable replay logging for target_org?" }, function(choice)
+      if choice == "Yes" then
+        Debug.disable_replay_logging()
+      end
+    end)
+  else
+    vim.ui.select({ "Yes", "No" }, { prompt = "Enable replay logging for target_org?" }, function(choice)
+      if choice == "Yes" then
+        Debug.enable_replay_logging()
+      end
+    end)
+  end
+end
+
 --- Run the Apex test under the cursor, then download and launch the newest
 --- log produced by that run. Warns (rather than failing) if replay logging
 --- doesn't look enabled, since the log may then lack the required levels.

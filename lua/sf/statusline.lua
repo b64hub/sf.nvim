@@ -87,16 +87,22 @@ end
 
 --- Plain text for active TraceFlags: a clock icon + minutes until the
 --- soonest one expires, e.g. " 23m", plus a count badge if more than one
---- is active. "" when none. Read-only against the cache -- no I/O.
+--- is active. Just the icon (or "trace" without icons) when the feature is
+--- on but nothing is active yet -- needed so the lualine component stays
+--- clickable to *enable* logging, not just to disable it. "" only when the
+--- feature is turned off entirely. Read-only against the cache -- no I/O.
 ---@return string
 function M.trace()
   if vim.g.sf and vim.g.sf.statusline and vim.g.sf.statusline.trace_flags == false then
     return ""
   end
 
+  local ui = (vim.g.sf and vim.g.sf.ui) or {}
+  local icon = (ui.icons ~= false) and "  " or "trace"
+
   local flags = require("sf.state").get_trace_flags()
   if #flags == 0 then
-    return ""
+    return icon
   end
 
   local soonest = math.huge
@@ -105,8 +111,6 @@ function M.trace()
   end
 
   local remaining_min = math.max(math.floor((soonest - os.time()) / 60), 0)
-  local ui = (vim.g.sf and vim.g.sf.ui) or {}
-  local icon = (ui.icons ~= false) and "  " or ""
   local count_suffix = #flags > 1 and (" (" .. #flags .. "x)") or ""
 
   return icon .. remaining_min .. "m" .. count_suffix
@@ -124,21 +128,7 @@ function M.lualine_trace()
     end,
     color = "SfStatusTrace",
     on_click = function()
-      local Debug = require("sf.debug")
-      local flags = require("sf.state").get_trace_flags()
-      if #flags > 0 then
-        vim.ui.select({ "Yes", "No" }, { prompt = "Disable replay logging for target_org?" }, function(choice)
-          if choice == "Yes" then
-            Debug.disable_replay_logging()
-          end
-        end)
-      else
-        vim.ui.select({ "Yes", "No" }, { prompt = "Enable replay logging for target_org?" }, function(choice)
-          if choice == "Yes" then
-            Debug.enable_replay_logging()
-          end
-        end)
-      end
+      require("sf.debug").toggle_replay_logging()
     end,
   }
 end
