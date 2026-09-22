@@ -9,16 +9,16 @@
 -- vs ~6s via the CLI for an equivalent Tooling query). Useful anywhere the
 -- plugin currently does several sequential `sf data`/`sf org` CLI calls.
 
-local U = require("sf.util")
-local B = require("sf.sub.cmd_builder")
+local util = require("sf.util")
+local cmd_builder = require("sf.sub.cmd_builder")
 
-local M = {}
+local rest_api = {}
 
 ---@param cmd table
 ---@param err_msg string
 ---@param cb fun(result: table|nil, err: string|nil)
 local function cli_json_call(cmd, err_msg, cb)
-  U.silent_system_call(cmd, nil, err_msg, function(obj)
+  util.silent_system_call(cmd, nil, err_msg, function(obj)
     local ok, decoded = pcall(vim.json.decode, obj.stdout)
     if not ok or not decoded then
       return cb(nil, err_msg .. ": could not parse response")
@@ -28,19 +28,35 @@ local function cli_json_call(cmd, err_msg, cb)
 end
 
 ---@return boolean
-M.has_curl = function()
+rest_api.has_curl = function()
   return vim.fn.executable("curl") == 1
 end
 
 --- One `sf org display` call gets everything needed to talk to the REST/
 --- Tooling APIs directly afterwards: access token, instance URL, API
 --- version, and the org's own username.
----@param cb fun(session: table|nil, err: string|nil)
-M.get_session = function(cb)
-  local cmd = B:new():cmd("org"):act("display"):addParams("--json"):buildAsTable()
+---@param alias_or_cb string|fun(session: table|nil, err: string|nil) optional org alias
+---  to scope the session to (defaults to `util.target_org` via `set_org`'s
+---  own fallback when omitted); may be omitted entirely, in which case this
+---  argument is the callback (backwards-compatible with `get_session(cb)`)
+---@param maybe_cb fun(session: table|nil, err: string|nil)|nil required when
+---  an alias is passed as the first argument
+rest_api.get_session = function(alias_or_cb, maybe_cb)
+  local alias, cb
+  if type(alias_or_cb) == "function" then
+    alias, cb = nil, alias_or_cb
+  else
+    alias, cb = alias_or_cb, maybe_cb
+  end
+
+  local builder = cmd_builder:new():cmd("org"):act("display"):addParams("--json")
+  if alias then
+    builder:set_org(alias)
+  end
+  local cmd = builder:buildAsTable()
   cli_json_call(cmd, "Failed to get org session", function(result, err)
     local r = result and result.result
-    if not r or U.is_empty_str(r.accessToken) then
+    if not r or util.is_empty_str(r.accessToken) then
       return cb(nil, err or "failed to read org session (accessToken missing)")
     end
     cb({ token = r.accessToken, url = r.instanceUrl, api_version = r.apiVersion, username = r.username }, nil)
@@ -51,12 +67,12 @@ end
 ---  callers pass their own `session.token`
 ---@param cb fun(decoded: table|nil, err: string|nil) `decoded.status` is the
 ---  HTTP status; `decoded.records`/`.id`/`.success` depend on the endpoint
-M.curl_json = function(args, cb)
+rest_api.curl_json = function(args, cb)
   local cmd = vim.list_extend({ "curl", "-s", "-w", "\nHTTPSTATUS:%{http_code}" }, args)
-  U.silent_system_call(cmd, nil, "API request failed", function(obj)
+  util.silent_system_call(cmd, nil, "API request failed", function(obj)
     local body, status = (obj.stdout or ""):match("^(.-)\nHTTPSTATUS:(%d+)%s*$")
     status = tonumber(status) or 0
-    if U.is_empty_str(body) then
+    if util.is_empty_str(body) then
       return cb({ status = status }, nil)
     end
 
@@ -75,8 +91,8 @@ end
 ---@param session table {token, url, api_version}
 ---@param soql string
 ---@param cb fun(records: table[]|nil, err: string|nil)
-M.query = function(session, soql, cb)
-  M.curl_json({
+rest_api.query = function(session, soql, cb)
+  rest_api.curl_json({
     "-G",
     string.format("%s/services/data/v%s/tooling/query", session.url, session.api_version),
     "--data-urlencode",
@@ -91,15 +107,15 @@ M.query = function(session, soql, cb)
   end)
 end
 
---- Same as `M.query` but against the standard (non-Tooling) REST query
+--- Same as `rest_api.query` but against the standard (non-Tooling) REST query
 --- endpoint - needed for fields the Tooling API's object representation
 --- doesn't expose (e.g. `User.IsActive` errors as an unknown column via
 --- `/tooling/query`, but works fine via plain `/query`).
 ---@param session table
 ---@param soql string
 ---@param cb fun(records: table[]|nil, err: string|nil)
-M.query_std = function(session, soql, cb)
-  M.curl_json({
+rest_api.query_std = function(session, soql, cb)
+  rest_api.curl_json({
     "-G",
     string.format("%s/services/data/v%s/query", session.url, session.api_version),
     "--data-urlencode",
@@ -118,8 +134,8 @@ end
 ---@param sobject string
 ---@param fields table
 ---@param cb fun(id: string|nil, err: string|nil)
-M.create = function(session, sobject, fields, cb)
-  M.curl_json({
+rest_api.create = function(session, sobject, fields, cb)
+  rest_api.curl_json({
     "-X",
     "POST",
     string.format("%s/services/data/v%s/tooling/sobjects/%s/", session.url, session.api_version, sobject),
@@ -142,8 +158,8 @@ end
 ---@param id string
 ---@param fields table
 ---@param cb fun(ok: boolean, err: string|nil)
-M.update = function(session, sobject, id, fields, cb)
-  M.curl_json({
+rest_api.update = function(session, sobject, id, fields, cb)
+  rest_api.curl_json({
     "-X",
     "PATCH",
     string.format("%s/services/data/v%s/tooling/sobjects/%s/%s", session.url, session.api_version, sobject, id),
@@ -162,8 +178,8 @@ end
 ---@param sobject string
 ---@param id string
 ---@param cb fun(ok: boolean, err: string|nil)
-M.delete = function(session, sobject, id, cb)
-  M.curl_json({
+rest_api.delete = function(session, sobject, id, cb)
+  rest_api.curl_json({
     "-X",
     "DELETE",
     string.format("%s/services/data/v%s/tooling/sobjects/%s/%s", session.url, session.api_version, sobject, id),
@@ -174,4 +190,4 @@ M.delete = function(session, sobject, id, cb)
   end)
 end
 
-return M
+return rest_api
