@@ -208,4 +208,56 @@ T["parse_log_list"]["returns error on invalid JSON"] = function()
   expect.match(child.lua_get([[err]]), "Failed")
 end
 
+T["open_dashboard"] = new_set()
+
+T["open_dashboard"]["does not open dashboard when org list is empty"] = function()
+  child.lua([[
+    util = require("sf.util")
+    _show_err_message = nil
+    util.show_err = function(msg)
+      _show_err_message = msg
+    end
+
+    local dashboard_module = require("sf.ui.org_dashboard")
+    local original_open = dashboard_module.open
+    _dashboard_open_called = false
+    dashboard_module.open = function()
+      _dashboard_open_called = true
+    end
+
+    M.open_dashboard()
+    dashboard_module.open = original_open
+  ]])
+
+  eq(child.lua_get([[_show_err_message]]), "No orgs available. Run :SF org list first.")
+  eq(child.lua_get([[_dashboard_open_called]]), false)
+end
+
+T["open_dashboard"]["opens dashboard when orgs are available"] = function()
+  child.lua([[
+    util = require("sf.util")
+    H = M.__test
+    H.orgs = {
+      { alias = "org1", username = "user1", is_default = true, is_default_devhub = false },
+      { alias = "org2", username = "user2", is_default = false, is_default_devhub = false },
+    }
+    
+    -- Mock the dashboard.open to avoid creating actual windows
+    local dashboard_module = require("sf.ui.org_dashboard")
+    local original_open = dashboard_module.open
+    dashboard_module.open = function(orgs, opts)
+      _dashboard_open_called = true
+      _dashboard_orgs_count = #orgs
+      _dashboard_opts_prompt = opts.prompt
+    end
+    
+    M.open_dashboard()
+    dashboard_module.open = original_open
+  ]])
+  
+  eq(child.lua_get([[_dashboard_open_called]]), true)
+  eq(child.lua_get([[_dashboard_orgs_count]]), 2)
+  eq(child.lua_get([[_dashboard_opts_prompt]]), "Org Dashboard")
+end
+
 return T

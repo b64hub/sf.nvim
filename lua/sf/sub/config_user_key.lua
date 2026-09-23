@@ -18,6 +18,7 @@ key_bindings.set_default_hotkeys = function()
   -- Common hotkeys for all files;
   nmap("<leader>sfs", sf.set_target_org, "set target_org current workspace")
   nmap("<leader>sfS", sf.set_global_target_org, "set global target_org")
+  nmap("<leader>sfg", sf.open_org_dashboard, "open org dashboard")
   nmap("<leader>sff", sf.fetch_org_list, "fetch orgs info")
   nmap("<leader>sfml", sf.list_md_to_retrieve, "metadata listing")
   nmap("<leader>sfmtl", sf.list_md_type_to_retrieve, "metadata-type listing")

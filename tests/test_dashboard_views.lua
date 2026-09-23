@@ -129,4 +129,149 @@ test_set["filter_logs: no matches returns empty array"] = function()
   eq(child.lua_get([[#filtered]]), 0)
 end
 
+test_set["format_limits: computes used percentage correctly"] = function()
+  child.lua([[
+    local limits_data = {
+      DailyApiRequests = { Max = 15000, Remaining = 14000 },
+    }
+    rows = dashboard_views._format_limits(limits_data)
+  ]])
+  eq(child.lua_get([[#rows]]), 1)
+  eq(child.lua_get([[rows[1].name]]), "DailyApiRequests")
+  eq(child.lua_get([[rows[1].max_val]]), 15000)
+  eq(child.lua_get([[rows[1].remaining]]), 14000)
+  eq(child.lua_get([[rows[1].used_count]]), 1000)
+  eq(child.lua_get([[math.floor(rows[1].used_percent)]]), 6) -- (1000 / 15000 * 100) ≈ 6.67 -> 6
+end
+
+test_set["format_limits: guards against division by zero for Max=0"] = function()
+  child.lua([[
+    local limits_data = {
+      SomeLimit = { Max = 0, Remaining = 0 },
+    }
+    rows = dashboard_views._format_limits(limits_data)
+  ]])
+  eq(child.lua_get([[#rows]]), 1)
+  eq(child.lua_get([[rows[1].used_percent]]), 0) -- Should be 0, not NaN or error
+end
+
+test_set["format_limits: prioritizes interesting limits first"] = function()
+  child.lua([[
+    local limits_data = {
+      ZebraLimit = { Max = 100, Remaining = 50 },
+      DailyApiRequests = { Max = 15000, Remaining = 14000 },
+      FileStorageMB = { Max = 1000, Remaining = 800 },
+      AppleLimit = { Max = 200, Remaining = 100 },
+      DataStorageMB = { Max = 5000, Remaining = 4000 },
+    }
+    rows = dashboard_views._format_limits(limits_data)
+  ]])
+  eq(child.lua_get([[#rows]]), 5)
+  eq(child.lua_get([[rows[1].name]]), "DailyApiRequests")
+  eq(child.lua_get([[rows[2].name]]), "DataStorageMB")
+  eq(child.lua_get([[rows[3].name]]), "FileStorageMB")
+  eq(child.lua_get([[rows[4].name]]), "AppleLimit")
+  eq(child.lua_get([[rows[5].name]]), "ZebraLimit")
+end
+
+test_set["format_limits: ignores non-table values"] = function()
+  child.lua([[
+    local limits_data = {
+      DailyApiRequests = { Max = 15000, Remaining = 14000 },
+      InvalidEntry = "not a table",
+      AnotherLimit = { Max = 500, Remaining = 250 },
+    }
+    rows = dashboard_views._format_limits(limits_data)
+  ]])
+  eq(child.lua_get([[#rows]]), 2)
+  eq(child.lua_get([[rows[1].name]]), "DailyApiRequests")
+  eq(child.lua_get([[rows[2].name]]), "AnotherLimit")
+end
+
+test_set["flatten_package_row: fully populated record"] = function()
+  child.lua([[
+    local record = {
+      SubscriberPackage = { Name = "TestPackage", NamespacePrefix = "testns" },
+      SubscriberPackageVersion = { MajorVersion = 2, MinorVersion = 5 },
+    }
+    flattened = dashboard_views._flatten_package_row(record)
+  ]])
+  eq(child.lua_get([[flattened.name]]), "TestPackage")
+  eq(child.lua_get([[flattened.namespace]]), "testns")
+  eq(child.lua_get([[flattened.version]]), "2.5")
+end
+
+test_set["flatten_package_row: nil namespace prefix falls back to unmanaged"] = function()
+  child.lua([[
+    local record = {
+      SubscriberPackage = { Name = "TestPackage", NamespacePrefix = nil },
+      SubscriberPackageVersion = { MajorVersion = 1, MinorVersion = 0 },
+    }
+    flattened = dashboard_views._flatten_package_row(record)
+  ]])
+  eq(child.lua_get([[flattened.namespace]]), "unmanaged")
+end
+
+test_set["flatten_package_row: missing version fields falls back to unknown"] = function()
+  child.lua([[
+    local record = {
+      SubscriberPackage = { Name = "TestPackage", NamespacePrefix = "testns" },
+      SubscriberPackageVersion = { MajorVersion = nil, MinorVersion = nil },
+    }
+    flattened = dashboard_views._flatten_package_row(record)
+  ]])
+  eq(child.lua_get([[flattened.version]]), "unknown")
+end
+
+test_set["flatten_package_row: missing SubscriberPackage falls back gracefully"] = function()
+  child.lua([[
+    local record = {
+      SubscriberPackage = nil,
+      SubscriberPackageVersion = { MajorVersion = 1, MinorVersion = 2 },
+    }
+    flattened = dashboard_views._flatten_package_row(record)
+  ]])
+  eq(child.lua_get([[flattened.name]]), "unknown")
+  eq(child.lua_get([[flattened.namespace]]), "unmanaged")
+  eq(child.lua_get([[flattened.version]]), "1.2")
+end
+
+test_set["packages render: no packages installed"] = function()
+  child.lua([[
+    local packages_view
+    for _, view in ipairs(dashboard_views) do
+      if view.id == "packages" then
+        packages_view = view
+        break
+      end
+    end
+    rendered_lines = packages_view.render({}, {})
+  ]])
+  local line = child.lua_get([[rendered_lines[1] ]])
+  expect.match(line, "No packages installed")
+end
+
+test_set["packages render: formats package with namespace and version"] = function()
+  child.lua([[
+    local packages_view
+    for _, view in ipairs(dashboard_views) do
+      if view.id == "packages" then
+        packages_view = view
+        break
+      end
+    end
+    local data = {
+      {
+        SubscriberPackage = { Name = "MyPackage", NamespacePrefix = "mypkg" },
+        SubscriberPackageVersion = { MajorVersion = 3, MinorVersion = 1 },
+      },
+    }
+    rendered_lines = packages_view.render({}, data)
+  ]])
+  local line = child.lua_get([[rendered_lines[1] ]])
+  expect.match(line, "MyPackage")
+  expect.match(line, "mypkg")
+  expect.match(line, "3.1")
+end
+
 return test_set

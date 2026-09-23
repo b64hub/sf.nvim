@@ -24,6 +24,14 @@ function Org.diff_in_org()
   helpers.diff_in_org()
 end
 
+function Org.open_dashboard()
+  if vim.tbl_isempty(helpers.orgs) then
+    return util.show_err("No orgs available. Run :SF org list first.")
+  end
+
+  require("sf.ui.org_dashboard").open(helpers.orgs, { prompt = "Org Dashboard" })
+end
+
 function Org.open()
   -- local cmd = 'sf org open -o ' .. util.get()
   local cmd = cmd_builder:new():cmd("org"):act("open"):build()

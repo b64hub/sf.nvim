@@ -117,6 +117,10 @@ Sf.diff_in_target_org = Org.diff_in_target_org
 --- The left window displays the local verison, the right window displays the remote org verison
 Sf.diff_in_org = Org.diff_in_org
 
+--- Open the org dashboard: a split-pane view with the org list on the left
+--- and details/actions on the right. Requires orgs to be fetched first via |Sf.fetch_org_list|.
+Sf.open_org_dashboard = Org.open_dashboard
+
 --- Open the target_org in browser
 Sf.org_open = Org.open
 
