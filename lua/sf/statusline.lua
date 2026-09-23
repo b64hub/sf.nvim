@@ -80,7 +80,7 @@ function M.lualine()
     cond = M.is_sf_project,
     color = M.org_color,
     on_click = function()
-      require("sf").set_target_org()
+      require("sf").open_org_dashboard()
     end,
   }
 end

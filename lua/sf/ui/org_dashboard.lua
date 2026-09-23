@@ -1,8 +1,7 @@
 -- Split-pane org dashboard: left pane shows org list, right pane shows
--- details/actions for the selected org. Mirrors the modal org_explorer's
--- architecture (generation counter, spinner timer, async detail fetch) but
--- stays open and re-renders the right pane on cursor movement instead of
--- toggling views.
+-- details/actions for the selected org. Uses a generation counter, spinner
+-- timer, and async detail fetching; stays open and re-renders the right pane
+-- on cursor movement.
 
 local util = require("sf.util")
 local Layout = require("sf.ui.layout")
@@ -12,12 +11,27 @@ local Org = require("sf.org")
 
 local dashboard = {}
 
+-- Singleton guard: hold the active session so only one dashboard instance
+-- can be open at a time.
+local active_session = nil
+
 --- Open a split-pane dashboard showing orgs on the left, details on the right.
 ---@param records table[] org records (alias, username, is_scratch, is_sandbox, is_prod, is_default, is_default_devhub, expiration_date)
 ---@param opts table { prompt = string }
 function dashboard.open(records, opts)
   if #records == 0 then
     return vim.notify("Sf: no orgs available. Run :SF org list first.", vim.log.levels.WARN)
+  end
+
+  -- Singleton guard: if a dashboard is already open, re-focus its list window
+  -- instead of creating a duplicate pair of floats.
+  if active_session then
+    if vim.api.nvim_win_is_valid(active_session.list_window) then
+      vim.api.nvim_set_current_win(active_session.list_window)
+      return
+    end
+    -- Window was closed externally; fall through and create a new session.
+    active_session = nil
   end
 
   local list_lines, list_hls = org_view.render_list_lines(records)
@@ -44,13 +58,18 @@ function dashboard.open(records, opts)
     spinner_timer = nil,
     filter_query = nil, -- current filter query for logs view
     filtered_logs = {}, -- keeps track of log ids in rendered order for download mapping
+    view_header_lines = 0, -- number of header lines (tabs + blank line) in the view buffer
   }
 
   local footer_for = function()
     local parts = {}
-    for _, view_desc in ipairs(dashboard_views) do
+    -- Only show action-only views in the footer, not tab views (those are in the strip)
+    for _, view_desc in ipairs(dashboard_views.action_views()) do
       table.insert(parts, view_desc.key .. " " .. view_desc.label)
     end
+    -- Add dashboard-level keys that have no descriptor
+    table.insert(parts, "f filter")
+    table.insert(parts, "r refresh")
     table.insert(parts, "q close")
     return " " .. table.concat(parts, " · ") .. " "
   end
@@ -78,15 +97,24 @@ function dashboard.open(records, opts)
     list_win_opts.footer_pos = "left"
   end
 
-  local get_view_title = function()
-    local active_view = nil
-    for _, view_desc in ipairs(dashboard_views) do
-      if view_desc.id == session.active_view_id then
-        active_view = view_desc
-        break
-      end
+  -- Define current_record early since get_view_title needs it
+  local current_record_func
+  current_record_func = function()
+    if not session.list_window or not vim.api.nvim_win_is_valid(session.list_window) then
+      return nil
     end
-    return active_view and (" " .. active_view.label .. " ") or " View "
+    local row = vim.api.nvim_win_get_cursor(session.list_window)[1]
+    return records[row]
+  end
+
+  local get_view_title = function()
+    -- Get the current org alias to display in the title
+    -- If session.list_window is not yet set, use a placeholder
+    if not session.list_window then
+      return " Org "
+    end
+    local record = current_record_func()
+    return record and (" " .. record.alias .. " ") or " Org "
   end
 
   local view_win_opts = {
@@ -110,6 +138,7 @@ function dashboard.open(records, opts)
 
   session.list_window = list_window
   session.view_window = view_window
+  active_session = session
 
   vim.wo[list_window].cursorline = true
   -- Normally off (the view pane is a read-only display, not navigated) --
@@ -209,7 +238,22 @@ function dashboard.open(records, opts)
       line_hls = { {} }
     end
 
-    org_view.paint(session.view_buffer, lines, line_hls)
+    -- Prepend the tab strip to the content
+    local view_width = geometry_pair.right.width
+    local strip_lines, strip_hls = dashboard_views.render_tab_strip(session.active_view_id, view_width)
+    local header_lines = {}
+    local header_hls = {}
+    vim.list_extend(header_lines, strip_lines)
+    vim.list_extend(header_hls, strip_hls)
+    -- Add a blank separator line
+    table.insert(header_lines, "")
+    table.insert(header_hls, {})
+    session.view_header_lines = #header_lines
+
+    vim.list_extend(header_lines, lines)
+    vim.list_extend(header_hls, line_hls)
+
+    org_view.paint(session.view_buffer, header_lines, header_hls)
   end
 
   local show_view = function(record, view_id)
@@ -272,13 +316,8 @@ function dashboard.open(records, opts)
     end)
   end
 
-  local current_record = function()
-    if not vim.api.nvim_win_is_valid(session.list_window) then
-      return nil
-    end
-    local row = vim.api.nvim_win_get_cursor(session.list_window)[1]
-    return records[row]
-  end
+  -- current_record is already defined above as current_record_func
+  local current_record = current_record_func
 
   local repaint_list = function()
     -- `session.list_buffer` is a *buffer* handle -- validate it with
@@ -308,6 +347,7 @@ function dashboard.open(records, opts)
       vim.api.nvim_win_close(session.view_window, true)
     end
     pcall(vim.api.nvim_del_augroup_by_name, "SfOrgDashboardCursor")
+    active_session = nil
   end
 
   -- Set up CursorMoved autocommand on the list buffer.
@@ -322,12 +362,8 @@ function dashboard.open(records, opts)
   vim.keymap.set("n", "<Esc>", close, { buffer = session.list_buffer, nowait = true })
 
   -- Refresh key: clears cache, bumps generation, re-runs fetch_org_list.
-  -- ponytail: fetch_org_list has no in-flight guard (pre-existing --
-  -- every other caller, e.g. <leader>sff, has always had this same gap),
-  -- so pressing 'r' twice before the first `sf org list` call returns can
-  -- race two overlapping fetches into helpers.orgs. Upgrade path: a
-  -- fetch-in-progress flag on helpers, if this ever proves more than
-  -- theoretical.
+  -- Overlapping fetch-org-list calls now resolve via last-writer-wins in
+  -- helpers.store_orgs (Phase 1 fix), so no additional in-flight guard is needed.
   vim.keymap.set("n", "r", function()
     session.cache = {}
     session.generation = session.generation + 1
@@ -357,14 +393,16 @@ function dashboard.open(records, opts)
   -- into `session.filtered_logs` (which log). A user downloads a specific
   -- log by moving focus into the view pane (e.g. <C-w>w) and placing the
   -- cursor on that log's line, so nvim_win_get_cursor(session.view_window)
-  -- is only meaningful there.
+  -- is only meaningful there. Subtract the header offset (tab strip + blank line)
+  -- to get the actual log index.
   vim.keymap.set("n", "<CR>", function()
     if session.active_view_id ~= "logs" then
       return
     end
     local view_row = vim.api.nvim_win_get_cursor(session.view_window)[1]
-    if view_row > 0 and view_row <= #session.filtered_logs then
-      local log_record = session.filtered_logs[view_row]
+    local log_index = view_row - session.view_header_lines
+    if log_index >= 1 and log_index <= #session.filtered_logs then
+      local log_record = session.filtered_logs[log_index]
       local log_dir = util.get_plugin_folder_path() .. "logs/"
       Org.download_log(log_record.id, log_dir, function(path)
         util.try_open_file(path)
@@ -380,7 +418,7 @@ function dashboard.open(records, opts)
       local record = current_record()
       if record then
         -- Action-only entry: invoke the action immediately
-        if view_desc.action and not view_desc.fetch and not view_desc.render then
+        if vim.tbl_contains(dashboard_views.action_views(), view_desc) then
           local dashboard_api = {
             repaint_list = repaint_list,
           }

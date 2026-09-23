@@ -660,12 +660,13 @@ return {
 
 <br>
 
-## 🎨 UI: restyled terminal, quiet progress, org explorer
+## 🎨 UI: restyled terminal, quiet progress, org dashboard
 
-The integrated terminal, the task progress indicator, and the org
-list/picker (`:SF org setTarget`, `:SF org setGlobalTarget`, `:SF currentFile
-diffIn`) all share one restyled look: a small, corner-anchored, rounded, blue
-float by default.
+The integrated terminal, the task progress indicator, and org management
+features all share one restyled look: a small, corner-anchored, rounded, blue
+float by default. The org dashboard provides an interactive view of your
+orgs; other org commands (`:SF org setTarget`, `:SF org setGlobalTarget`, `:SF currentFile
+diffIn`) use a quick picker prompt.
 
 ### Config reference
 
@@ -726,18 +727,48 @@ any time; a failed task does this automatically if `expand_on_error` is on.
 Tests, queries, and anonymous Apex still show the full terminal, since
 their output is what you're there to read.
 
-### Org explorer
+### Org dashboard
 
-`:SF org setTarget`/`setGlobalTarget` and `:SF currentFile diffIn` open a
-small table (icon color-coded by org type: Salesforce blue for production,
-white for sandbox, cyan for scratch) instead of a bare list:
+The org dashboard provides a persistent split-pane view of all your orgs and detailed information about each one. Open it with:
+- Command: `:SF org dashboard`
+- Lua: `require('sf').open_org_dashboard()`
+- Default keymap: `<leader>sfg`
+
+The left pane shows your org list (color-coded by type: Salesforce blue for production, white for sandbox, cyan for scratch). Move the cursor to select an org; the right pane displays details and actions for the selected org.
+
+**Navigation and refresh:**
 
 | Key | Action |
 | --- | --- |
-| `<CR>` | select this org |
-| `<Tab>` | expand/collapse full `sf org display` detail for this org (lazy-loaded and cached per session -- it's a genuinely slow CLI call) |
-| `o` | `sf org open` this org in the browser, without closing |
-| `q` / `<Esc>` / `<BS>` | back to the list from detail, or close from the list |
+| `r` | refresh org list and reload the current view |
+| `q` / `<Esc>` | close the dashboard |
+
+**View selection (right pane shows different data for each):**
+
+| Key | View |
+| --- | --- |
+| `d` | Details (basic org info) |
+| `s` | Org Status (API version, features, limits) |
+| `t` | Trace Flags (active debug logging) |
+| `l` | Logs (API debug logs) |
+| `u` | Org Limits (usage and allocation) |
+| `p` | Installed Packages |
+
+**Actions (perform an operation on the selected org):**
+
+| Key | Action |
+| --- | --- |
+| `L` | Set as local default (`target-org` in `.sf/config.json`) |
+| `G` | Set as global default (`target-org` in `~/.sf/config.json`) |
+| `o` | Open in browser |
+| `e` | Enable trace flag logging (Apex Replay Debugger) |
+
+**In the Logs view:**
+
+| Key | Action |
+| --- | --- |
+| `f` | Filter logs by query string |
+| `<CR>` | Download the log under the cursor (requires focus in the right pane) |
 
 ### Overriding colors
 

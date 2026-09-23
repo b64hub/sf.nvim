@@ -86,6 +86,32 @@ test_set["open: q closes both windows"] = function()
   eq(windows_after < windows_before, true)
 end
 
+test_set["open: singleton guard prevents duplicate dashboards"] = function()
+  child.lua([[
+    records = {
+      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+      { alias = "org2", username = "user2", is_sandbox = true, is_default = false, is_default_devhub = false, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(500, function() return false end, 50)]])
+
+  local windows_after_first_open = child.lua_get([[#vim.api.nvim_list_wins()]])
+  eq(windows_after_first_open >= 2, true)
+
+  -- Call dashboard.open a second time with the same records
+  child.lua([[
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(500, function() return false end, 50)]])
+
+  local windows_after_second_open = child.lua_get([[#vim.api.nvim_list_wins()]])
+  -- Should still have the same number of windows, not doubled
+  eq(windows_after_second_open, windows_after_first_open)
+end
+
 test_set["open: no orgs raises notification"] = function()
   child.lua([[
     records = {}
@@ -124,8 +150,10 @@ test_set["view registry: footer contains registered view keys"] = function()
     return ""
   ]])
 
-  -- Footer should contain 'd' for details view
-  eq(footer_text:find("d") ~= nil, true)
+  -- Footer should NOT contain 'd' for details view (tabs are in the strip, not footer)
+  eq(footer_text:find(" d ") == nil, true)
+  -- Footer should contain action-only keys like 'L', 'G', 'o'
+  eq(footer_text:find("L") ~= nil, true)
   -- Footer should contain 'q' for close
   eq(footer_text:find("q") ~= nil, true)
 end
@@ -167,22 +195,23 @@ test_set["view registry: can add and use a second view"] = function()
   child.lua([[vim.wait(500, function() return false end, 50)]])
 
   -- Get view buffer content to verify fake view is rendered
-  local view_lines = child.lua([[
-    local view_buffers = {}
+  -- Note: the buffer now starts with a tab strip, so content is after the header
+  local fake_view_found = child.lua([[
     for _, buf in ipairs(vim.api.nvim_list_bufs()) do
       if vim.bo[buf].filetype == "SfOrgDashboard" then
         local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-        -- Find the buffer that has our fake view data
-        if lines[1] and lines[1]:find("Fake view") then
-          return lines
+        -- Find the line that has our fake view data
+        for _, line in ipairs(lines) do
+          if line:find("Fake view") then
+            return true
+          end
         end
       end
     end
-    return {}
+    return false
   ]])
 
-  eq(#view_lines > 0, true)
-  eq(view_lines[1]:find("Fake view") ~= nil, true)
+  eq(fake_view_found, true)
 end
 
 test_set["view registry: cache hit prevents re-fetch"] = function()
@@ -224,12 +253,13 @@ test_set["view registry: cache hit prevents re-fetch"] = function()
   child.lua([[vim.wait(500, function() return false end, 50)]])
 
   local first_render = child.lua([[
-    local view_buffers = {}
     for _, buf in ipairs(vim.api.nvim_list_bufs()) do
       if vim.bo[buf].filetype == "SfOrgDashboard" then
         local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-        if lines[1] and lines[1]:find("Fetch count") then
-          return lines[1]
+        for _, line in ipairs(lines) do
+          if line:find("Fetch count") then
+            return line
+          end
         end
       end
     end
@@ -244,12 +274,13 @@ test_set["view registry: cache hit prevents re-fetch"] = function()
   child.lua([[vim.wait(200, function() return false end, 50)]])
 
   local second_render = child.lua([[
-    local view_buffers = {}
     for _, buf in ipairs(vim.api.nvim_list_bufs()) do
       if vim.bo[buf].filetype == "SfOrgDashboard" then
         local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-        if lines[1] and lines[1]:find("Fetch count") then
-          return lines[1]
+        for _, line in ipairs(lines) do
+          if line:find("Fetch count") then
+            return line
+          end
         end
       end
     end
@@ -443,6 +474,87 @@ test_set["action entry: dashboard_api.repaint_list invoked after action"] = func
   -- org1's line no longer carries the default marker (●); org2's does.
   eq(list_lines[1]:sub(1, 2), "  ")
   expect.match(list_lines[2], "^\u{25CF} ")
+end
+
+test_set["tab strip: view buffer first lines contain tab labels"] = function()
+  child.lua([[
+    records = {
+      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+    }
+    
+    org_view = require("sf.ui.org_view")
+    org_view.fetch_org_display = function(record, callback)
+      vim.schedule(function()
+        callback({ alias = record.alias }, nil)
+      end)
+    end
+    
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(500, function() return false end, 50)]])
+
+  local view_buffer_content = child.lua([[
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.bo[buf].filetype == "SfOrgDashboard" then
+        local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+        -- The view buffer has 2+ lines (tab strip + blank + content)
+        if #lines > 2 then
+          -- Check if it contains typical tab labels
+          return table.concat(lines, "\n")
+        end
+      end
+    end
+    return ""
+  ]])
+
+  -- The view buffer should have tab labels like "d Details"
+  eq(view_buffer_content:find("Details") ~= nil, true)
+end
+
+test_set["footer: shows action-only views, not tabs; includes f, r, q"] = function()
+  child.lua([[
+    records = {
+      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+    }
+    
+    org_view = require("sf.ui.org_view")
+    org_view.fetch_org_display = function(record, callback)
+      vim.schedule(function()
+        callback({ alias = record.alias }, nil)
+      end)
+    end
+    
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(500, function() return false end, 50)]])
+
+  local footer_text = child.lua([[
+    local footer_config = nil
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      local config = vim.api.nvim_win_get_config(win)
+      if config.footer then
+        footer_config = config.footer
+        break
+      end
+    end
+    if footer_config then
+      return footer_config[1][1]
+    end
+    return ""
+  ]])
+
+  -- Footer should contain action keys like L, G, o, t, e
+  eq(footer_text:find("L") ~= nil, true)
+  eq(footer_text:find("G") ~= nil, true)
+  eq(footer_text:find("o") ~= nil, true)
+  -- Footer should contain f, r, q (dashboard-level keys)
+  eq(footer_text:find("f") ~= nil, true)
+  eq(footer_text:find("r") ~= nil, true)
+  eq(footer_text:find("q") ~= nil, true)
+  -- Footer should NOT contain tab labels (Details, Logs, etc. are in the strip, not footer)
+  eq(footer_text:find("Details") == nil, true)
 end
 
 return test_set

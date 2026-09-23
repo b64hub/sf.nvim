@@ -31,10 +31,16 @@ function org_status.parse_instance_status(decoded)
   if type(raw_incidents) == "table" then
     for _, incident in ipairs(raw_incidents) do
       if type(incident) == "table" then
+        -- ponytail: real response shape still unverified against a live
+        -- fixture (see note above) -- id/message have been observed as
+        -- non-string (nested table) on at least one real org, which used
+        -- to crash the renderer's `..` concat. Coerce defensively instead
+        -- of trusting the field type; upgrade path: pin a real fixture and
+        -- extract the nested shape properly once known.
         table.insert(incidents, {
-          id = incident.id,
-          message = incident.message,
-          severity = incident.severity,
+          id = type(incident.id) == "string" and incident.id or nil,
+          message = type(incident.message) == "string" and incident.message or nil,
+          severity = type(incident.severity) == "string" and incident.severity or nil,
         })
       end
     end

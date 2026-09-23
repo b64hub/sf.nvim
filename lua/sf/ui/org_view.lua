@@ -1,12 +1,11 @@
--- Shared org-record rendering and fetching for the modal org explorer and
--- future dashboard. Handles list view (org summary table), detail view
--- (expanded org via `sf org display`), and colour-coding by org type
--- (prod/sandbox/scratch).
+-- Shared org-record rendering and fetching for the org dashboard. Handles
+-- list view (org summary table), detail view (expanded org via `sf org
+-- display`), and colour-coding by org type (prod/sandbox/scratch).
 --
 -- Performance note: `sf org display` is genuinely slow (10-60+ seconds
--- in practice), so it's fetched lazily per the org_explorer modal's pattern:
--- only for the org you expand, run async, shown with a spinner while in
--- flight, and cached for re-renders in a single session.
+-- in practice), so it's fetched lazily: only for the org you expand, run
+-- async, shown with a spinner while in flight, and cached for re-renders in a
+-- single session.
 
 local cmd_builder = require("sf.sub.cmd_builder")
 local Icons = require("sf.ui.icons")

@@ -150,6 +150,58 @@ local function format_limits(decoded)
   return rows
 end
 
+--- Render the org status section for the merged details view.
+--- Returns a single error line on error, never an empty section.
+---@param status_data table|nil the result of org_status.fetch (or nil on error)
+---@param status_err string|nil error message from org_status.fetch
+---@return string[] lines, table[] per-line highlight segments
+local function render_status_section(status_data, status_err)
+  local lines, line_hls = {}, {}
+
+  if status_err then
+    local err_line = "Org status unavailable: " .. status_err
+    table.insert(lines, err_line)
+    table.insert(line_hls, { { group = "SfError", col_start = 0, col_end = #err_line } })
+    return lines, line_hls
+  end
+
+  if not status_data then
+    -- This should not happen if fetch properly guards against it,
+    -- but defend gracefully just in case.
+    local err_line = "Org status unavailable: no data returned"
+    table.insert(lines, err_line)
+    table.insert(line_hls, { { group = "SfError", col_start = 0, col_end = #err_line } })
+    return lines, line_hls
+  end
+
+  local status_line = "Status: " .. status_data.status
+  table.insert(lines, status_line)
+  table.insert(line_hls, { { group = status_highlight(status_data.status), col_start = 0, col_end = #status_line } })
+
+  if status_data.message then
+    table.insert(lines, status_data.message)
+    table.insert(line_hls, {})
+  end
+
+  table.insert(lines, "")
+  table.insert(line_hls, {})
+
+  if #status_data.incidents == 0 then
+    table.insert(lines, "No incidents reported.")
+    table.insert(line_hls, {})
+  else
+    table.insert(lines, "Incidents:")
+    table.insert(line_hls, {})
+    for _, incident in ipairs(status_data.incidents) do
+      local incident_line = "  - " .. (incident.message or incident.id or "(no details)")
+      table.insert(lines, incident_line)
+      table.insert(line_hls, { { group = "SfWarn", col_start = 0, col_end = #incident_line } })
+    end
+  end
+
+  return lines, line_hls
+end
+
 --- Flatten a raw Tooling API InstalledSubscriberPackage record into a simple table.
 --- Handles missing nested fields gracefully, falling back to sensible defaults.
 ---@param raw_record table raw record from Tooling API with nested SubscriberPackage and SubscriberPackageVersion fields
@@ -183,52 +235,67 @@ local views = {
     key = "d",
     label = "Details",
     fetch = function(record, callback)
-      org_view.fetch_org_display(record, callback)
-    end,
-    render = function(record, data)
-      return org_view.render_detail_lines(record, nil, data, nil)
-    end,
-    action = nil, -- details view is fetch+render only
-  },
-  {
-    id = "status",
-    key = "s",
-    label = "Org Status",
-    fetch = function(record, callback)
-      rest_api.get_session(record.alias, function(session, err)
-        if not session then
-          return callback(nil, err)
+      -- Fetch both detail and status in parallel with a pending counter.
+      -- Call back exactly once with both halves, always with err = nil
+      -- so paint_view doesn't blank the whole pane on partial failure.
+      local pending = 2
+      local detail_result = { data = nil, err = nil }
+      local status_result = { data = nil, err = nil }
+
+      local check_complete = function()
+        pending = pending - 1
+        if pending == 0 then
+          -- Always pass err = nil to avoid blanking the pane on partial failure.
+          callback(
+            {
+              detail = detail_result.data,
+              detail_err = detail_result.err,
+              status = status_result.data,
+              status_err = status_result.err,
+            },
+            nil
+          )
         end
-        org_status.fetch(session, callback)
-      end)
-    end,
-    render = function(_, data)
-      local lines, line_hls = {}, {}
-
-      local status_line = "Status: " .. data.status
-      table.insert(lines, status_line)
-      table.insert(line_hls, { { group = status_highlight(data.status), col_start = 0, col_end = #status_line } })
-
-      if data.message then
-        table.insert(lines, data.message)
-        table.insert(line_hls, {})
       end
 
+      -- Fetch org details
+      org_view.fetch_org_display(record, function(detail_data, detail_err)
+        detail_result.data = detail_data
+        detail_result.err = detail_err
+        check_complete()
+      end)
+
+      -- Fetch org status
+      rest_api.get_session(record.alias, function(session, session_err)
+        if not session then
+          status_result.data = nil
+          status_result.err = session_err or "could not get session"
+          check_complete()
+        else
+          org_status.fetch(session, function(status_data, status_err)
+            status_result.data = status_data
+            status_result.err = status_err
+            check_complete()
+          end)
+        end
+      end)
+    end,
+    render = function(record, data)
+      local lines, line_hls = {}, {}
+
+      -- Render details section (org_view.render_detail_lines expects non-nil detail_err when detail is nil)
+      local detail_lines, detail_hls = org_view.render_detail_lines(record, nil, data.detail, data.detail_err)
+      vim.list_extend(lines, detail_lines)
+      vim.list_extend(line_hls, detail_hls)
+
+      -- Add separator blank line
       table.insert(lines, "")
       table.insert(line_hls, {})
 
-      if #data.incidents == 0 then
-        table.insert(lines, "No incidents reported.")
-        table.insert(line_hls, {})
-      else
-        table.insert(lines, "Incidents:")
-        table.insert(line_hls, {})
-        for _, incident in ipairs(data.incidents) do
-          local incident_line = "  - " .. (incident.message or incident.id or "(no details)")
-          table.insert(lines, incident_line)
-          table.insert(line_hls, { { group = "SfWarn", col_start = 0, col_end = #incident_line } })
-        end
-      end
+      -- Render status section
+      local status_lines, status_hls = render_status_section(data.status, data.status_err)
+      vim.list_extend(lines, status_lines)
+      vim.list_extend(line_hls, status_hls)
 
       return lines, line_hls
     end,
@@ -276,7 +343,8 @@ local views = {
         if not session then
           return callback(nil, err)
         end
-        local soql = "SELECT Id, DebugLevel.DeveloperName, ExpirationDate, TracedEntity.Name FROM TraceFlag ORDER BY ExpirationDate DESC"
+        local soql =
+          "SELECT Id, DebugLevel.DeveloperName, ExpirationDate, TracedEntity.Name FROM TraceFlag ORDER BY ExpirationDate DESC"
         rest_api.query(session, soql, function(records, query_err)
           if not records then
             return callback(nil, query_err)
@@ -397,7 +465,8 @@ local views = {
         if not session then
           return callback(nil, err)
         end
-        local soql = "SELECT SubscriberPackage.Name, SubscriberPackage.NamespacePrefix, SubscriberPackageVersion.MajorVersion, SubscriberPackageVersion.MinorVersion FROM InstalledSubscriberPackage"
+        local soql =
+          "SELECT SubscriberPackage.Name, SubscriberPackage.NamespacePrefix, SubscriberPackageVersion.MajorVersion, SubscriberPackageVersion.MinorVersion FROM InstalledSubscriberPackage"
         rest_api.query(session, soql, function(records, query_err)
           if not records then
             return callback(nil, query_err)
@@ -427,6 +496,103 @@ local views = {
     action = nil,
   },
 }
+
+--- Return the tab views (entries with a non-nil render function).
+--- These are the views shown in the tab strip.
+---@return table[] array of view descriptors that have a render function
+function views.tab_views()
+  local tabs = {}
+  for _, view_desc in ipairs(views) do
+    if view_desc.render then
+      table.insert(tabs, view_desc)
+    end
+  end
+  return tabs
+end
+
+--- Return the action-only views (entries with action and no fetch/render).
+--- These are shown in the footer only, not in the tab strip.
+---@return table[] array of view descriptors that are action-only
+function views.action_views()
+  local actions = {}
+  for _, view_desc in ipairs(views) do
+    if view_desc.action and not view_desc.fetch and not view_desc.render then
+      table.insert(actions, view_desc)
+    end
+  end
+  return actions
+end
+
+--- Render a tab strip from the list of tab views.
+--- Tabs are rendered as "key label" joined by " │ ", greedily wrapped onto
+--- additional lines when the joined text exceeds width. The active tab gets
+--- SfTitle highlight, others get SfFooter.
+---@param active_view_id string the id of the currently active view
+---@param width number the available width for the strip
+---@return string[] lines, table[] per-line highlight segments
+function views.render_tab_strip(active_view_id, width)
+  local tabs = views.tab_views()
+  if #tabs == 0 then
+    return {}, {}
+  end
+
+  -- Build tab text for each tab: "key label"
+  local tab_texts = {}
+  for _, view_desc in ipairs(tabs) do
+    table.insert(tab_texts, view_desc.key .. " " .. view_desc.label)
+  end
+
+  -- Greedy word-wrap with separator " │ "
+  local separator = " │ "
+  local lines = {}
+  local line_hls = {}
+  local current_line = ""
+  local current_highlights = {}
+
+  for tab_idx, tab_text in ipairs(tab_texts) do
+    local view_desc = tabs[tab_idx]
+    local is_active = view_desc.id == active_view_id
+    local highlight_group = is_active and "SfTitle" or "SfFooter"
+
+    -- Calculate what the line would be if we add this tab
+    local prefix = current_line ~= "" and separator or ""
+    local new_line = current_line .. prefix .. tab_text
+
+    if #new_line <= width or current_line == "" then
+      -- Tab fits on current line (or it's the first tab)
+      local col_start = #current_line + #prefix
+      local col_end = col_start + #tab_text
+
+      current_line = new_line
+      table.insert(current_highlights, {
+        group = highlight_group,
+        col_start = col_start,
+        col_end = col_end,
+      })
+    else
+      -- Tab doesn't fit; flush current line and start a new one
+      table.insert(lines, current_line)
+      table.insert(line_hls, current_highlights)
+
+      current_line = tab_text
+      current_highlights = {
+        {
+          group = highlight_group,
+          col_start = 0,
+          col_end = #tab_text,
+        },
+      }
+    end
+  end
+
+  -- Flush any remaining line
+  if current_line ~= "" then
+    table.insert(lines, current_line)
+    table.insert(line_hls, current_highlights)
+  end
+
+  return lines, line_hls
+end
 
 -- Export filter_logs, format_limits, and flatten_package_row for testing
 views._filter_logs = filter_logs

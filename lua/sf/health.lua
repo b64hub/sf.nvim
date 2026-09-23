@@ -185,7 +185,7 @@ H.check_ui = function()
 
   if ui.icons ~= false then
     vim.health.info(
-      "ui.icons is enabled (default): the terminal float, progress widget, org explorer and statusline use a Nerd Font "
+      "ui.icons is enabled (default): the terminal float, progress widget, org dashboard and statusline use a Nerd Font "
         .. "cloud glyph. If it renders as a box/question mark, set `ui.icons = false` or install a Nerd Font "
         .. "(https://www.nerdfonts.com/)."
     )

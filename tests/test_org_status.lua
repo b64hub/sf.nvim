@@ -58,4 +58,24 @@ test_set["parse_instance_status: nil input does not error"] = function()
   eq(result.incidents, {})
 end
 
+-- Regression: a real org returned incidents with non-string id/message
+-- (nested tables), which crashed render_status_section's `..` concat
+-- ("attempt to concatenate a table value") since parse_instance_status
+-- copied those fields through unchecked. Must coerce to nil, not error.
+test_set["parse_instance_status: incident with table-shaped id/message does not error"] = function()
+  child.lua([[
+    decoded = {
+      status = "MAJOR_INCIDENT",
+      Incidents = {
+        { id = { raw = "nested" }, message = { text = "nested" }, severity = "major" },
+      },
+    }
+  ]])
+  local result = child.lua_get([[org_status.parse_instance_status(decoded)]])
+  eq(result.status, "MAJOR_INCIDENT")
+  eq(#result.incidents, 1)
+  eq(result.incidents[1].id, nil)
+  eq(result.incidents[1].message, nil)
+end
+
 return test_set

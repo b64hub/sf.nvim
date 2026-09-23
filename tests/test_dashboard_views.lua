@@ -274,4 +274,275 @@ test_set["packages render: formats package with namespace and version"] = functi
   expect.match(line, "3.1")
 end
 
+test_set["merged details: render with both detail and status ok"] = function()
+  child.lua([[
+    local details_view
+    for _, view in ipairs(dashboard_views) do
+      if view.id == "details" then
+        details_view = view
+        break
+      end
+    end
+    local data = {
+      detail = { alias = "myorg", username = "user@example.com", id = "org-id" },
+      detail_err = nil,
+      status = { status = "OK", message = nil, incidents = {} },
+      status_err = nil,
+    }
+    rendered_lines, _ = details_view.render({ alias = "myorg" }, data)
+  ]])
+  local line_count = child.lua_get([[#rendered_lines]])
+  eq(line_count > 0, true)
+  local line_content = child.lua_get([[table.concat(rendered_lines, "\n")]])
+  expect.match(line_content, "Status")
+end
+
+test_set["merged details: render with detail ok, status error"] = function()
+  child.lua([[
+    local details_view
+    for _, view in ipairs(dashboard_views) do
+      if view.id == "details" then
+        details_view = view
+        break
+      end
+    end
+    local data = {
+      detail = { alias = "myorg", username = "user@example.com", id = "org-id" },
+      detail_err = nil,
+      status = nil,
+      status_err = "connection failed",
+    }
+    rendered_lines, _ = details_view.render({ alias = "myorg" }, data)
+  ]])
+  local line_count = child.lua_get([[#rendered_lines]])
+  eq(line_count > 0, true)
+  local line_content = child.lua_get([[table.concat(rendered_lines, "\n")]])
+  expect.match(line_content, "unavailable")
+end
+
+test_set["merged details: render with detail error, status ok"] = function()
+  child.lua([[
+    local details_view
+    for _, view in ipairs(dashboard_views) do
+      if view.id == "details" then
+        details_view = view
+        break
+      end
+    end
+    local data = {
+      detail = nil,
+      detail_err = "sf org display failed",
+      status = { status = "OK", message = nil, incidents = {} },
+      status_err = nil,
+    }
+    rendered_lines, _ = details_view.render({ alias = "myorg" }, data)
+  ]])
+  local line_count = child.lua_get([[#rendered_lines]])
+  eq(line_count > 0, true)
+  local line_content = child.lua_get([[table.concat(rendered_lines, "\n")]])
+  expect.match(line_content, "Status")
+end
+
+test_set["merged details: render with both detail and status error"] = function()
+  child.lua([[
+    local details_view
+    for _, view in ipairs(dashboard_views) do
+      if view.id == "details" then
+        details_view = view
+        break
+      end
+    end
+    local data = {
+      detail = nil,
+      detail_err = "sf org display failed",
+      status = nil,
+      status_err = "could not get session",
+    }
+    rendered_lines, _ = details_view.render({ alias = "myorg" }, data)
+  ]])
+  local line_count = child.lua_get([[#rendered_lines]])
+  eq(line_count > 0, true)
+  local line_content = child.lua_get([[table.concat(rendered_lines, "\n")]])
+  expect.match(line_content, "unavailable")
+end
+
+test_set["merged details: fetch fires both lookups in parallel"] = function()
+  child.lua([[
+    local details_view
+    for _, view in ipairs(dashboard_views) do
+      if view.id == "details" then
+        details_view = view
+        break
+      end
+    end
+
+    -- Stub the dependencies
+    local org_view = require("sf.ui.org_view")
+    local original_fetch = org_view.fetch_org_display
+    local detail_fetch_called = false
+    org_view.fetch_org_display = function(record, callback)
+      detail_fetch_called = true
+      vim.schedule(function()
+        callback({ alias = record.alias, username = "test@example.com", id = "test-id" }, nil)
+      end)
+    end
+
+    local rest_api = require("sf.sub.rest_api")
+    local original_get_session = rest_api.get_session
+    local status_fetch_called = false
+    rest_api.get_session = function(alias, callback)
+      status_fetch_called = true
+      vim.schedule(function()
+        callback({ token = "test-token", url = "https://test.salesforce.com", api_version = "60.0" }, nil)
+      end)
+    end
+
+    local org_status = require("sf.sub.org_status")
+    local original_status_fetch = org_status.fetch
+    org_status.fetch = function(session, callback)
+      vim.schedule(function()
+        callback({ status = "OK", message = nil, incidents = {} }, nil)
+      end)
+    end
+
+    _G.merged_callback_called = false
+    _G.merged_callback_data = nil
+    details_view.fetch(
+      { alias = "test-org", username = "test@example.com" },
+      function(data, err)
+        _G.merged_callback_called = true
+        _G.merged_callback_data = data
+      end
+    )
+
+    -- Wait for async callbacks
+    vim.wait(500, function() return _G.merged_callback_called end, 50)
+
+    -- Restore
+    org_view.fetch_org_display = original_fetch
+    rest_api.get_session = original_get_session
+    org_status.fetch = original_status_fetch
+  ]])
+
+  eq(child.lua_get([[_G.merged_callback_called]]), true)
+  eq(child.lua_get([[_G.merged_callback_data ~= nil]]), true)
+  eq(child.lua_get([[_G.merged_callback_data.detail ~= nil]]), true)
+  eq(child.lua_get([[_G.merged_callback_data.status ~= nil]]), true)
+  eq(child.lua_get([[_G.merged_callback_data.detail.alias]]), "test-org")
+end
+
+test_set["tab_views: returns only entries with render function"] = function()
+  child.lua([[
+    local dashboard_views = require("sf.ui.dashboard_views")
+    local tabs = dashboard_views.tab_views()
+    _G.tab_count = #tabs
+    _G.all_have_render = true
+    for _, view in ipairs(tabs) do
+      if not view.render then
+        _G.all_have_render = false
+      end
+    end
+  ]])
+
+  eq(child.lua_get([[_G.tab_count > 0]]), true)
+  eq(child.lua_get([[_G.all_have_render]]), true)
+end
+
+test_set["action_views: returns only action-only entries"] = function()
+  child.lua([[
+    local dashboard_views = require("sf.ui.dashboard_views")
+    local actions = dashboard_views.action_views()
+    _G.action_count = #actions
+    _G.all_action_only = true
+    for _, view in ipairs(actions) do
+      if view.render or view.fetch then
+        _G.all_action_only = false
+      end
+      if not view.action then
+        _G.all_action_only = false
+      end
+    end
+  ]])
+
+  eq(child.lua_get([[_G.action_count > 0]]), true)
+  eq(child.lua_get([[_G.all_action_only]]), true)
+end
+
+test_set["render_tab_strip: shows all tab views"] = function()
+  child.lua([[
+    local dashboard_views = require("sf.ui.dashboard_views")
+    local lines, hls = dashboard_views.render_tab_strip("details", 80)
+    _G.strip_text = table.concat(lines, "\n")
+    _G.tabs = dashboard_views.tab_views()
+  ]])
+
+  local strip_text = child.lua_get([[_G.strip_text]])
+  -- Check that all tab labels appear in the strip
+  child.lua([[
+    _G.all_labels_present = true
+    for _, view in ipairs(_G.tabs) do
+      if not string.find(_G.strip_text, view.label, 1, true) then
+        _G.all_labels_present = false
+      end
+    end
+  ]])
+
+  eq(child.lua_get([[_G.all_labels_present]]), true)
+end
+
+test_set["render_tab_strip: active tab gets SfTitle, inactive get SfFooter"] = function()
+  child.lua([[
+    local dashboard_views = require("sf.ui.dashboard_views")
+    local lines, hls = dashboard_views.render_tab_strip("details", 80)
+    _G.has_title = false
+    _G.has_footer = false
+    for _, line_hl in ipairs(hls) do
+      for _, seg in ipairs(line_hl) do
+        if seg.group == "SfTitle" then
+          _G.has_title = true
+        end
+        if seg.group == "SfFooter" then
+          _G.has_footer = true
+        end
+      end
+    end
+  ]])
+
+  eq(child.lua_get([[_G.has_title]]), true)
+  eq(child.lua_get([[_G.has_footer]]), true)
+end
+
+test_set["render_tab_strip: wraps on narrow width"] = function()
+  child.lua([[
+    local dashboard_views = require("sf.ui.dashboard_views")
+    local lines_wide, _ = dashboard_views.render_tab_strip("details", 200)
+    local lines_narrow, _ = dashboard_views.render_tab_strip("details", 20)
+    _G.wide_count = #lines_wide
+    _G.narrow_count = #lines_narrow
+  ]])
+
+  local narrow_count = child.lua_get([[_G.narrow_count]])
+  local wide_count = child.lua_get([[_G.wide_count]])
+  eq(narrow_count > wide_count, true)
+end
+
+test_set["render_tab_strip: unknown active_view_id doesn't error"] = function()
+  child.lua([[
+    local dashboard_views = require("sf.ui.dashboard_views")
+    local lines, hls = dashboard_views.render_tab_strip("unknown", 80)
+    _G.strip_rendered = #lines > 0
+    _G.no_title = true
+    for _, line_hl in ipairs(hls) do
+      for _, seg in ipairs(line_hl) do
+        if seg.group == "SfTitle" then
+          _G.no_title = false
+        end
+      end
+    end
+  ]])
+
+  eq(child.lua_get([[_G.strip_rendered]]), true)
+  eq(child.lua_get([[_G.no_title]]), true)
+end
+
 return test_set

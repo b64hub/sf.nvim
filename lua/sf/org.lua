@@ -326,26 +326,33 @@ helpers.write_target_org_to_config = function(alias, global)
   return true
 end
 
+helpers.format_org_item = function(record)
+  local marker = record.is_default and "● " or "  "
+  local alias = record.alias or ""
+  local username = record.username or ""
+  return marker .. alias .. " (" .. username .. ")"
+end
+
 helpers.set_target_org = function()
   if vim.tbl_isempty(helpers.orgs) then
     return util.show_err("No orgs available. Run :SF org list first.")
   end
 
-  require("sf.ui.org_explorer").pick(helpers.orgs, {
-    prompt = "Local target_org",
-    on_open = function(record)
-      helpers.open_org(record.alias)
-    end,
-    on_choice = function(record)
-      local org = record.alias
-      local ok, err = helpers.write_target_org_to_config(org, false)
-      if not ok then
-        return util.show_err(org .. " - set target_org failed! " .. err)
-      end
-      helpers.mark_default(org)
-      util.set_target_org(org, record)
-    end,
-  })
+  vim.ui.select(helpers.orgs, {
+    prompt = "Local target_org:",
+    format_item = helpers.format_org_item,
+  }, function(record)
+    if record == nil then
+      return
+    end
+    local org = record.alias
+    local ok, err = helpers.write_target_org_to_config(org, false)
+    if not ok then
+      return util.show_err(org .. " - set target_org failed! " .. err)
+    end
+    helpers.mark_default(org)
+    util.set_target_org(org, record)
+  end)
 end
 
 helpers.set_global_target_org = function()
@@ -353,26 +360,32 @@ helpers.set_global_target_org = function()
     return util.show_err("No orgs available. Run :SF org list first.")
   end
 
-  require("sf.ui.org_explorer").pick(helpers.orgs, {
-    prompt = "Global target_org",
-    on_open = function(record)
-      helpers.open_org(record.alias)
-    end,
-    on_choice = function(record)
-      local org = record.alias
-      local ok, err = helpers.write_target_org_to_config(org, true)
-      if not ok then
-        return util.show_err(string.format("Global set target_org [%s] failed! %s", org, err))
-      end
-      helpers.mark_default(org)
-      util.set_target_org(org, record)
-      vim.notify("Global target_org set: " .. org, vim.log.levels.INFO)
-    end,
-  })
+  vim.ui.select(helpers.orgs, {
+    prompt = "Global target_org:",
+    format_item = helpers.format_org_item,
+  }, function(record)
+    if record == nil then
+      return
+    end
+    local org = record.alias
+    local ok, err = helpers.write_target_org_to_config(org, true)
+    if not ok then
+      return util.show_err(string.format("Global set target_org [%s] failed! %s", org, err))
+    end
+    helpers.mark_default(org)
+    util.set_target_org(org, record)
+    vim.notify("Global target_org set: " .. org, vim.log.levels.INFO)
+  end)
 end
 
 ---@param data string
 helpers.store_orgs = function(data)
+  -- Clear in-place so that any external references (e.g. dashboard)
+  -- still see updates after a refresh. Must happen on the arrival path,
+  -- not the dispatch path, so overlapping fetches become last-writer-wins
+  -- instead of additive.
+  helpers.clean_org_cache()
+
   local s = ""
   for _, v in ipairs(data) do
     s = s .. v
@@ -426,8 +439,6 @@ end
 
 helpers.fetch_org_list = function(on_done)
   util.is_sf_cmd_installed()
-
-  helpers.clean_org_cache()
   helpers.fetch_and_store_orgs(on_done)
 end
 
@@ -493,15 +504,15 @@ helpers.diff_in_org = function()
     return util.show_err("No orgs available. Run :SF org list first.")
   end
 
-  require("sf.ui.org_explorer").pick(helpers.orgs, {
-    prompt = "Diff in org",
-    on_open = function(record)
-      helpers.open_org(record.alias)
-    end,
-    on_choice = function(record)
-      helpers.diff_in(record.alias)
-    end,
-  })
+  vim.ui.select(helpers.orgs, {
+    prompt = "Diff in org:",
+    format_item = helpers.format_org_item,
+  }, function(record)
+    if record == nil then
+      return
+    end
+    helpers.diff_in(record.alias)
+  end)
 end
 
 ---@param org string
