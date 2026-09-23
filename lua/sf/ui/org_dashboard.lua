@@ -4,9 +4,11 @@
 -- stays open and re-renders the right pane on cursor movement instead of
 -- toggling views.
 
+local util = require("sf.util")
 local Layout = require("sf.ui.layout")
 local org_view = require("sf.ui.org_view")
 local dashboard_views = require("sf.ui.dashboard_views")
+local Org = require("sf.org")
 
 local dashboard = {}
 
@@ -40,6 +42,8 @@ function dashboard.open(records, opts)
     cache = {}, -- key = "alias:view_id", value = { data = ..., fetching = bool }
     generation = 0, -- bumped on state changes; guards stale async results
     spinner_timer = nil,
+    filter_query = nil, -- current filter query for logs view
+    filtered_logs = {}, -- keeps track of log ids in rendered order for download mapping
   }
 
   local footer_for = function()
@@ -108,7 +112,11 @@ function dashboard.open(records, opts)
   session.view_window = view_window
 
   vim.wo[list_window].cursorline = true
-  vim.wo[view_window].cursorline = false
+  -- Normally off (the view pane is a read-only display, not navigated) --
+  -- but the logs view is an exception: a user moves focus here to place
+  -- the cursor on a specific log line before pressing <CR> to download it,
+  -- so a visible cursorline is needed to see which line that is.
+  vim.wo[view_window].cursorline = true
 
   vim.api.nvim_win_set_option(
     list_window,
@@ -184,7 +192,18 @@ function dashboard.open(records, opts)
       lines = { spinner .. " Loading..." }
       line_hls = { { { group = "SfSpinner", col_start = 0, col_end = #lines[1] } } }
     elseif view_data then
-      lines, line_hls = view_desc.render(record, view_data)
+      -- Apply filter if this is the logs view
+      local render_data = view_data
+      if session.active_view_id == "logs" and session.filter_query then
+        render_data = dashboard_views._filter_logs(view_data, session.filter_query)
+      end
+
+      -- Track the logs in rendered order for download mapping
+      if session.active_view_id == "logs" then
+        session.filtered_logs = render_data
+      end
+
+      lines, line_hls = view_desc.render(record, render_data)
     else
       lines = { "" }
       line_hls = { {} }
@@ -302,6 +321,38 @@ function dashboard.open(records, opts)
   vim.keymap.set("n", "q", close, { buffer = session.list_buffer, nowait = true })
   vim.keymap.set("n", "<Esc>", close, { buffer = session.list_buffer, nowait = true })
 
+  -- Filter key (f) for logs view
+  vim.keymap.set("n", "f", function()
+    if session.active_view_id == "logs" then
+      local query = vim.fn.input("Filter logs: ")
+      session.filter_query = query and query ~= "" and query or nil
+      local record = current_record()
+      if record then
+        paint_view(record, 0)
+      end
+    end
+  end, { buffer = session.list_buffer, nowait = true })
+
+  -- Download log on <CR> -- bound on the VIEW buffer, not the list buffer:
+  -- the list buffer's cursor row indexes into `records` (which org), not
+  -- into `session.filtered_logs` (which log). A user downloads a specific
+  -- log by moving focus into the view pane (e.g. <C-w>w) and placing the
+  -- cursor on that log's line, so nvim_win_get_cursor(session.view_window)
+  -- is only meaningful there.
+  vim.keymap.set("n", "<CR>", function()
+    if session.active_view_id ~= "logs" then
+      return
+    end
+    local view_row = vim.api.nvim_win_get_cursor(session.view_window)[1]
+    if view_row > 0 and view_row <= #session.filtered_logs then
+      local log_record = session.filtered_logs[view_row]
+      local log_dir = util.get_plugin_folder_path() .. "logs/"
+      Org.download_log(log_record.id, log_dir, function(path)
+        util.try_open_file(path)
+      end)
+    end
+  end, { buffer = session.view_buffer, nowait = true })
+
   -- Bind view selection keys and action keys
   for _, view_desc in ipairs(dashboard_views) do
     local view_key = view_desc.key
@@ -319,6 +370,7 @@ function dashboard.open(records, opts)
           -- Fetch+render entry: show the view
           session.active_view_id = view_id
           update_view_title()
+          session.filter_query = nil -- Reset filter when switching views
           show_view(record, view_id)
         end
       end

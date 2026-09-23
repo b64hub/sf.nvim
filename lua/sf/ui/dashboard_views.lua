@@ -2,11 +2,48 @@
 -- Each descriptor defines how to fetch, render, and act on a view.
 -- Adding a new view is just adding an entry to this array.
 
+local util = require("sf.util")
 local org_view = require("sf.ui.org_view")
 local org_status = require("sf.sub.org_status")
 local rest_api = require("sf.sub.rest_api")
 local Org = require("sf.org")
 local Debug = require("sf.debug")
+
+--- Format one log record the same way whether it's being rendered or
+--- filtered, so a filter query can never drift from what's actually shown.
+---@param log table { user, start_time, size, status }
+---@return string
+local function format_log_line(log)
+  return string.format(
+    "%s | %s | %s | %s",
+    log.user,
+    string.gsub(log.start_time, "T", " "),
+    util.format_bytes(log.size),
+    log.status
+  )
+end
+
+--- Filter logs by case-insensitive substring match against any rendered field.
+--- Empty or nil query returns all logs unchanged.
+---@param logs table[] array of { id, user, start_time, size, status }
+---@param query string|nil search query (case-insensitive substring match)
+---@return table[] filtered logs
+local function filter_logs(logs, query)
+  if not query or query == "" then
+    return logs
+  end
+
+  local query_lower = string.lower(query)
+  local filtered = {}
+
+  for _, log in ipairs(logs) do
+    if string.find(string.lower(format_log_line(log)), query_lower, 1, true) then
+      table.insert(filtered, log)
+    end
+  end
+
+  return filtered
+end
 
 --- Highlight group for a given instance status string.
 ---@param status string
@@ -207,6 +244,34 @@ local views = {
       Debug.enable_replay_logging({ alias = record.alias })
     end,
   },
+  {
+    id = "logs",
+    key = "l",
+    label = "Logs",
+    fetch = function(record, callback)
+      Org.list_org_logs(record.alias, callback)
+    end,
+    render = function(_, data)
+      local lines, line_hls = {}, {}
+
+      if #data == 0 then
+        table.insert(lines, "No logs found.")
+        table.insert(line_hls, {})
+        return lines, line_hls
+      end
+
+      for _, log in ipairs(data) do
+        table.insert(lines, format_log_line(log))
+        table.insert(line_hls, {})
+      end
+
+      return lines, line_hls
+    end,
+    action = nil,
+  },
 }
+
+-- Export filter_logs for testing
+views._filter_logs = filter_logs
 
 return views

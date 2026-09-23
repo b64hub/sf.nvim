@@ -1,6 +1,6 @@
 local helpers = dofile("tests/helpers.lua")
 local child = helpers.new_child_neovim()
-local expect, eq = MiniTest.expect, MiniTest.expect.equality
+local expect, eq = helpers.expect, helpers.expect.equality
 local new_set = MiniTest.new_set
 
 -- helper
@@ -144,6 +144,68 @@ T["open_org"] = new_set({
 T["open_org"]["does not crash when opening an org"] = function()
   -- Just verify it doesn't error - a successful call
   child.lua([[M.open_org("test-org")]])
+end
+
+T["parse_log_list"] = new_set({
+  hooks = {
+    pre_case = function()
+      child.lua([[H = M.__test]])
+    end,
+  },
+})
+
+T["parse_log_list"]["parses apex list log --json output into flat array"] = function()
+  -- Outer wrapper uses a higher bracket level ([=[ ]=]) specifically so
+  -- the embedded JSON literal below it can safely use plain [[ ]] --
+  -- Lua long-bracket strings do not nest, so a bare [[ ]] pair here would
+  -- have closed the outer string early and left the rest as a syntax error.
+  child.lua([=[
+    local json = [[{
+      "result": [
+        {
+          "Id": "log1",
+          "LogUser": { "Name": "user1" },
+          "StartTime": "2024-01-01T10:00:00.000+0000",
+          "LogLength": 1024,
+          "Status": "Success"
+        },
+        {
+          "Id": "log2",
+          "LogUser": { "Name": "user2" },
+          "StartTime": "2024-01-02T11:00:00.000+0000",
+          "LogLength": 2048,
+          "Status": "Success"
+        }
+      ]
+    }]]
+    logs, err = H.parse_log_list(json)
+  ]=])
+  
+  eq(child.lua_get([[#logs]]), 2)
+  eq(child.lua_get([[logs[1].id]]), "log1")
+  eq(child.lua_get([[logs[1].user]]), "user1")
+  eq(child.lua_get([[logs[1].status]]), "Success")
+  eq(child.lua_get([[logs[2].id]]), "log2")
+  eq(child.lua_get([[logs[2].user]]), "user2")
+end
+
+T["parse_log_list"]["returns empty array when no logs in result"] = function()
+  child.lua([=[
+    local json = [[{ "result": [] }]]
+    logs, err = H.parse_log_list(json)
+  ]=])
+  
+  eq(child.lua_get([[#logs]]), 0)
+  eq(child.lua_get([[err == nil]]), true)
+end
+
+T["parse_log_list"]["returns error on invalid JSON"] = function()
+  child.lua([[
+    logs, err = H.parse_log_list("invalid json {")
+  ]])
+  
+  eq(child.lua_get([[#logs]]), 0)
+  expect.match(child.lua_get([[err]]), "Failed")
 end
 
 return T

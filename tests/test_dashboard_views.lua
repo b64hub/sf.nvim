@@ -83,4 +83,50 @@ test_set["trace_flags render: no trace flags"] = function()
   expect.match(line, "No active")
 end
 
+test_set["filter_logs: empty query returns all logs"] = function()
+  child.lua([[
+    local logs = {
+      { id = "1", user = "alice", start_time = "2024-01-01T10:00:00.000+0000", size = 1024, status = "Success" },
+      { id = "2", user = "bob", start_time = "2024-01-02T11:00:00.000+0000", size = 2048, status = "Success" },
+    }
+    filtered = dashboard_views._filter_logs(logs, nil)
+  ]])
+  eq(child.lua_get([[#filtered]]), 2)
+end
+
+test_set["filter_logs: case-insensitive substring match on user"] = function()
+  child.lua([[
+    local logs = {
+      { id = "1", user = "Alice", start_time = "2024-01-01T10:00:00.000+0000", size = 1024, status = "Success" },
+      { id = "2", user = "Bob", start_time = "2024-01-02T11:00:00.000+0000", size = 2048, status = "Success" },
+    }
+    filtered = dashboard_views._filter_logs(logs, "alice")
+  ]])
+  eq(child.lua_get([[#filtered]]), 1)
+  eq(child.lua_get([[filtered[1].id]]), "1")
+end
+
+test_set["filter_logs: substring match on status"] = function()
+  child.lua([[
+    local logs = {
+      { id = "1", user = "Alice", start_time = "2024-01-01T10:00:00.000+0000", size = 1024, status = "Success" },
+      { id = "2", user = "Bob", start_time = "2024-01-02T11:00:00.000+0000", size = 2048, status = "Error" },
+      { id = "3", user = "Charlie", start_time = "2024-01-03T12:00:00.000+0000", size = 512, status = "Success" },
+    }
+    filtered = dashboard_views._filter_logs(logs, "Success")
+  ]])
+  eq(child.lua_get([[#filtered]]), 2)
+end
+
+test_set["filter_logs: no matches returns empty array"] = function()
+  child.lua([[
+    local logs = {
+      { id = "1", user = "Alice", start_time = "2024-01-01T10:00:00.000+0000", size = 1024, status = "Success" },
+      { id = "2", user = "Bob", start_time = "2024-01-02T11:00:00.000+0000", size = 2048, status = "Success" },
+    }
+    filtered = dashboard_views._filter_logs(logs, "xyz")
+  ]])
+  eq(child.lua_get([[#filtered]]), 0)
+end
+
 return test_set

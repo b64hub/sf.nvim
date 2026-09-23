@@ -71,6 +71,24 @@ function Org.pull_log()
   end)
 end
 
+--- List logs from an org (identified by alias) and call the callback with the parsed list.
+--- Does not use fzf-lua; suitable for use by the dashboard's logs view.
+---@param alias string the org alias to list logs from
+---@param callback fun(logs: table[], err: string|nil) called with parsed logs array or error
+function Org.list_org_logs(alias, callback)
+  local cmd_tbl = cmd_builder:new()
+      :cmd("apex")
+      :act("list")
+      :subact("log")
+      :addParams("--json")
+      :set_org(alias)
+      :buildAsTable()
+  util.system_call(cmd_tbl, nil, "Failed to list logs from org", function(obj)
+    local logs, err = helpers.parse_log_list(obj.stdout)
+    callback(logs, err)
+  end, "Querying logs...")
+end
+
 --- Pick a log from the org's log list (fzf-lua) and download it into `dir`.
 --- Reused by the replay debugger to download into the sfdx-conventional
 --- `.sfdx/tools/debug/logs/` folder instead.
@@ -110,6 +128,57 @@ helpers.download_log = function(log_id, dir, on_done)
   end)
 end
 
+--- Pure function: parse the output of `apex list log --json` into a flat array of log records.
+--- @param stdout_lines string[] stdout from the command (as passed by jobstart)
+--- @return table[] logs array of { id, user, start_time, size, status, raw } -- `raw`
+---   carries every original field from the CLI's ApexLog record (flattened
+---   the same way pick_org_log's pre-refactor inline code did: `User` set
+---   from `LogUser.Name`, `attributes`/`LogUser` stripped) so pick_org_log's
+---   fzf preview can stay byte-identical to before this was extracted; the
+---   dashboard's logs view only needs the 5 flat fields and ignores `raw`.
+--- @return string|nil err error message if parsing failed; on success err is nil
+helpers.parse_log_list = function(stdout_lines)
+  -- stdout_lines is typically a string (can be passed directly to vim.json.decode)
+  -- or an array of strings (when called from system_call's buffered output).
+  -- Handle both cases by concatenating if needed.
+  local stdout_str
+  if type(stdout_lines) == "string" then
+    stdout_str = stdout_lines
+  else
+    stdout_str = table.concat(stdout_lines, "")
+  end
+
+  local ok, parsed = pcall(vim.json.decode, stdout_str, {})
+  if not ok then
+    return {}, "Failed to parse log JSON!"
+  end
+
+  local result = parsed["result"] or {}
+  if not result or #result == 0 then
+    return {}, nil
+  end
+
+  local logs = {}
+  for _, log_entry in ipairs(result) do
+    local user_name = log_entry["LogUser"] and log_entry["LogUser"]["Name"] or ""
+    log_entry["User"] = user_name
+    log_entry["attributes"] = nil
+    log_entry["LogUser"] = nil
+
+    local record = {
+      id = log_entry["Id"],
+      user = user_name,
+      start_time = log_entry["StartTime"] or "",
+      size = log_entry["LogLength"] or 0,
+      status = log_entry["Status"] or "",
+      raw = log_entry,
+    }
+    table.insert(logs, record)
+  end
+
+  return logs, nil
+end
+
 ---@param dir string
 ---@param on_done fun(path: string)
 helpers.pick_org_log = function(dir, on_done)
@@ -123,31 +192,26 @@ helpers.pick_org_log = function(dir, on_done)
   local log_id
 
   local on_list = function(obj)
-    local ok, log_table = pcall(vim.json.decode, obj.stdout, {})
-    if not ok then
-      return util.show_err("Failed to parse log JSON!")
+    local logs, parse_err = helpers.parse_log_list(obj.stdout)
+    if parse_err then
+      return util.show_err(parse_err)
     end
-
-    local logs = {}
-    local log_names = {}
-
-    if #log_table["result"] == 0 then
+    if #logs == 0 then
       return util.show_warn("No logs found in org")
     end
 
-    for _, v in ipairs(log_table["result"]) do
+    local log_names = {}
+    local logs_by_name = {}
+    for _, log_record in ipairs(logs) do
       local name = string.format(
         "%s | %s | %s | %s",
-        v["LogUser"]["Name"],
-        string.gsub(v["StartTime"], "T", " "),
-        util.format_bytes(v["LogLength"]),
-        v["Status"]
+        log_record.user,
+        string.gsub(log_record.start_time, "T", " "),
+        util.format_bytes(log_record.size),
+        log_record.status
       )
       table.insert(log_names, name)
-      v["User"] = v["LogUser"]["Name"]
-      v["attributes"] = nil
-      v["LogUser"] = nil
-      logs[name] = v
+      logs_by_name[name] = log_record.raw
     end
 
     require("fzf-lua").fzf_exec(log_names, {
@@ -162,14 +226,14 @@ helpers.pick_org_log = function(dir, on_done)
         local contents = {}
         local prepend_char = ""
         vim.tbl_map(function(x)
-          table.insert(contents, prepend_char .. util.table_to_string_lines(logs[x]))
+          table.insert(contents, prepend_char .. util.table_to_string_lines(logs_by_name[x]))
           prepend_char = "\n"
         end, items)
         return contents
       end,
       actions = {
         ["default"] = function(selected)
-          log_id = logs[selected[1]]["Id"]
+          log_id = logs_by_name[selected[1]]["Id"]
           helpers.download_log(log_id, dir, on_done)
         end,
       },
