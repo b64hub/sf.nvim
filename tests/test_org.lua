@@ -25,6 +25,36 @@ T["fetch_org_list"] = new_set({ hooks = { pre_case = mock_test } })
 T["fetch_org_list"]["test1"] = function()
   eq(child.lua_get([[vim.lsp.buf_get_clients()]]), { "mock client" })
 end
+
+T["fetch_org_list"]["on_done callback is invoked after fetch completes"] = function()
+  child.lua([[
+    local util = require("sf.util")
+    util.is_sf_cmd_installed = function() end
+    
+    -- Track callback invocation globally
+    _G.callback_called = false
+    
+    -- Mock vim.fn.jobstart to immediately fire the on_exit callback
+    vim.fn.jobstart = function(cmd, opts)
+      -- Simulate buffered stdout with mock org data
+      if opts.on_stdout then
+        opts.on_stdout(nil, { '{"result":{"nonScratchOrgs":[],"scratchOrgs":[]}}' })
+      end
+      -- Fire on_exit callback immediately
+      if opts.on_exit then
+        opts.on_exit()
+      end
+      return 1  -- return a mock job ID
+    end
+    
+    -- Call fetch_org_list with callback
+    M.fetch_org_list(function()
+      _G.callback_called = true
+    end)
+  ]])
+  
+  eq(child.lua_get([[_G.callback_called]]), true)
+end
 --
 -- T['get()']['target_org empty then err'] = function()
 --   expect.error(function() child.lua([[M.get()]]) end)

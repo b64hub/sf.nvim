@@ -301,6 +301,83 @@ test_set["action entry: spy function is called with record"] = function()
   eq(alias, "org2")
 end
 
+test_set["refresh key 'r': re-fetches org list and invalidates the active view's cache"] = function()
+  child.lua([[
+    local util = require("sf.util")
+    util.is_sf_cmd_installed = function() end
+
+    -- Track org-list refetches (jobstart calls) separately from the fake
+    -- view's own fetch, so this test can distinguish "org list refetched"
+    -- from "the currently active view's cache was actually invalidated" --
+    -- two different claims a refresh needs to satisfy, not just one.
+    _G.jobstart_count = 0
+    vim.fn.jobstart = function(_, opts)
+      _G.jobstart_count = _G.jobstart_count + 1
+      if opts.on_stdout then
+        opts.on_stdout(nil, { '{"result":{"nonScratchOrgs":[{"alias":"org1","username":"user1","isScratch":false,"isSandbox":false,"isDefaultUsername":true,"isDefaultDevHubUsername":false}],"scratchOrgs":[]}}' })
+      end
+      if opts.on_exit then
+        opts.on_exit()
+      end
+      return 1
+    end
+
+    records = {
+      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+    }
+
+    -- A fake view (key 'z' -- deliberately not 'f', which the real logs
+    -- view's filter keymap already uses) whose own fetch is counted, so a
+    -- second fetch after refresh proves session.cache was actually cleared
+    -- for it, not just that Org.fetch_org_list ran again.
+    _G.fake_view_fetch_count = 0
+    table.insert(dashboard_views, {
+      id = "cache_probe",
+      key = "z",
+      label = "Cache Probe",
+      fetch = function(record, callback)
+        _G.fake_view_fetch_count = _G.fake_view_fetch_count + 1
+        vim.schedule(function()
+          callback({ probe = record.alias }, nil)
+        end)
+      end,
+      render = function(_, data)
+        return { "probe: " .. data.probe }, { {} }
+      end,
+      action = nil,
+    })
+
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(500, function() return false end, 50)]])
+
+  -- Switch to the fake view: first fetch, gets cached.
+  child.lua([[vim.api.nvim_input("z")]])
+  child.lua([[vim.wait(300, function() return false end, 50)]])
+  eq(child.lua_get([[_G.fake_view_fetch_count]]), 1)
+
+  -- Re-selecting the same view without a refresh is a cache hit -- no
+  -- second fetch. (Establishes the baseline this test's refresh assertion
+  -- below is actually contrasted against.)
+  child.lua([[vim.api.nvim_input("z")]])
+  child.lua([[vim.wait(200, function() return false end, 50)]])
+  eq(child.lua_get([[_G.fake_view_fetch_count]]), 1)
+
+  local jobstart_count_before_refresh = child.lua_get([[_G.jobstart_count]])
+
+  -- Press 'r' to refresh.
+  child.lua([[vim.api.nvim_input("r")]])
+  child.lua([[vim.wait(500, function() return false end, 50)]])
+
+  -- Org list was re-fetched (another jobstart call)...
+  eq(child.lua_get([[_G.jobstart_count]]) > jobstart_count_before_refresh, true)
+  -- ...AND the currently-active fake view was re-fetched too, proving its
+  -- cache entry was actually cleared rather than just the org list's own
+  -- data being refreshed underneath a stale view cache.
+  eq(child.lua_get([[_G.fake_view_fetch_count]]), 2)
+end
+
 test_set["action entry: dashboard_api.repaint_list invoked after action"] = function()
   child.lua([[
     helpers = require("sf.org").__test

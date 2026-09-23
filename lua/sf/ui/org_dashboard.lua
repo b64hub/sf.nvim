@@ -321,6 +321,25 @@ function dashboard.open(records, opts)
   vim.keymap.set("n", "q", close, { buffer = session.list_buffer, nowait = true })
   vim.keymap.set("n", "<Esc>", close, { buffer = session.list_buffer, nowait = true })
 
+  -- Refresh key: clears cache, bumps generation, re-runs fetch_org_list.
+  -- ponytail: fetch_org_list has no in-flight guard (pre-existing --
+  -- every other caller, e.g. <leader>sff, has always had this same gap),
+  -- so pressing 'r' twice before the first `sf org list` call returns can
+  -- race two overlapping fetches into helpers.orgs. Upgrade path: a
+  -- fetch-in-progress flag on helpers, if this ever proves more than
+  -- theoretical.
+  vim.keymap.set("n", "r", function()
+    session.cache = {}
+    session.generation = session.generation + 1
+    Org.fetch_org_list(function()
+      repaint_list()
+      local record = current_record()
+      if record then
+        show_view(record, session.active_view_id)
+      end
+    end)
+  end, { buffer = session.list_buffer, nowait = true })
+
   -- Filter key (f) for logs view
   vim.keymap.set("n", "f", function()
     if session.active_view_id == "logs" then

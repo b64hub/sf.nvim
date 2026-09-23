@@ -4,8 +4,8 @@ local cmd_builder = require("sf.sub.cmd_builder")
 local helpers = {}
 local Org = {}
 
-function Org.fetch_org_list()
-  helpers.fetch_org_list()
+function Org.fetch_org_list(on_done)
+  helpers.fetch_org_list(on_done)
 end
 
 function Org.set_target_org()
@@ -263,7 +263,11 @@ helpers.open_org = function(alias)
 end
 
 helpers.clean_org_cache = function()
-  helpers.orgs = {}
+  -- Clear in-place so that any external references (e.g. dashboard) still see
+  -- updates after a refresh.
+  while #helpers.orgs > 0 do
+    table.remove(helpers.orgs)
+  end
 end
 
 --- Flip the `is_default` flag onto `alias` and off every other cached org,
@@ -406,20 +410,25 @@ helpers.store_orgs = function(data)
   Org.refresh_target_org_from_disk()
 end
 
-helpers.fetch_and_store_orgs = function()
+helpers.fetch_and_store_orgs = function(on_done)
   vim.fn.jobstart("sf org list --json --skip-connection-status", {
     stdout_buffered = true,
     on_stdout = function(_, data)
       helpers.store_orgs(data)
     end,
+    on_exit = function()
+      if on_done then
+        on_done()
+      end
+    end,
   })
 end
 
-helpers.fetch_org_list = function()
+helpers.fetch_org_list = function(on_done)
   util.is_sf_cmd_installed()
 
   helpers.clean_org_cache()
-  helpers.fetch_and_store_orgs()
+  helpers.fetch_and_store_orgs(on_done)
 end
 
 --- Read "target-org" from the project's `.sf/config.json`, falling back to
