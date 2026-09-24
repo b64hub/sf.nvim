@@ -4,8 +4,8 @@ local cmd_builder = require("sf.sub.cmd_builder")
 local helpers = {}
 local Org = {}
 
-function Org.fetch_org_list()
-  helpers.fetch_org_list()
+function Org.fetch_org_list(on_done)
+  helpers.fetch_org_list(on_done)
 end
 
 function Org.set_target_org()
@@ -24,6 +24,14 @@ function Org.diff_in_org()
   helpers.diff_in_org()
 end
 
+function Org.open_dashboard()
+  if vim.tbl_isempty(helpers.orgs) then
+    return util.show_err("No orgs available. Run :SF org list first.")
+  end
+
+  require("sf.ui.org_dashboard").open(helpers.orgs, { prompt = "Org Dashboard" })
+end
+
 function Org.open()
   -- local cmd = 'sf org open -o ' .. util.get()
   local cmd = cmd_builder:new():cmd("org"):act("open"):build()
@@ -38,9 +46,57 @@ function Org.open_current_file()
   util.job_call(cmd, nil, err_msg)
 end
 
+--- Set the target org for a specific alias (local or global) and update cached state.
+---@param alias string
+---@param global boolean whether to set globally (~/.sf/config.json) or locally (.sf/config.json)
+function Org.set_target_org_to(alias, global)
+  local ok, err = helpers.write_target_org_to_config(alias, global)
+  if not ok then
+    return util.show_err(
+      string.format("%s - set target_org failed! %s", alias, err)
+    )
+  end
+  helpers.mark_default(alias)
+  local record = nil
+  for _, record_entry in ipairs(helpers.orgs) do
+    if record_entry.alias == alias then
+      record = record_entry
+      break
+    end
+  end
+  util.set_target_org(alias, record)
+end
+
+--- Open a specific org (not necessarily the target_org) in the browser.
+---@param alias string
+function Org.open_org(alias)
+  helpers.open_org(alias)
+end
+
 function Org.pull_log()
   helpers.pick_org_log(util.get_plugin_folder_path() .. "logs/", function(path)
     util.try_open_file(path)
+  end)
+end
+
+--- List logs from an org (identified by alias) and call the callback with the parsed list.
+--- Does not use fzf-lua; suitable for use by the dashboard's logs view.
+---@param alias string the org alias to list logs from
+---@param callback fun(logs: table[], err: string|nil) called with parsed logs array or error
+function Org.list_org_logs(alias, callback)
+  local cmd_tbl = cmd_builder:new()
+      :cmd("apex")
+      :act("list")
+      :subact("log")
+      :addParams("--json")
+      :set_org(alias)
+      :buildAsTable()
+  -- Silent: the dashboard already shows its own inline spinner/"Loading..."
+  -- state while this is in flight (org_dashboard.lua's paint_view), so a
+  -- second top-right progress box here is redundant.
+  util.silent_system_call(cmd_tbl, nil, "Failed to list logs from org", function(obj)
+    local logs, err = helpers.parse_log_list(obj.stdout)
+    callback(logs, err)
   end)
 end
 
@@ -83,6 +139,62 @@ helpers.download_log = function(log_id, dir, on_done)
   end)
 end
 
+--- Pure function: parse the output of `apex list log --json` into a flat array of log records.
+--- @param stdout_lines string[] stdout from the command (as passed by jobstart)
+--- @return table[] logs array of { id, user, start_time, size, status, raw } -- `raw`
+---   carries every original field from the CLI's ApexLog record (flattened
+---   the same way pick_org_log's pre-refactor inline code did: `User` set
+---   from `LogUser.Name`, `attributes`/`LogUser` stripped) so pick_org_log's
+---   fzf preview can stay byte-identical to before this was extracted; the
+---   dashboard's logs view only needs the 5 flat fields and ignores `raw`.
+--- @return string|nil err error message if parsing failed; on success err is nil
+helpers.parse_log_list = function(stdout_lines)
+  -- stdout_lines is typically a string (can be passed directly to vim.json.decode)
+  -- or an array of strings (when called from system_call's buffered output).
+  -- Handle both cases by concatenating if needed.
+  local stdout_str
+  if type(stdout_lines) == "string" then
+    stdout_str = stdout_lines
+  else
+    stdout_str = table.concat(stdout_lines, "")
+  end
+
+  -- luanil = { object = true }: decode JSON null as Lua nil, not the
+  -- truthy vim.NIL sentinel -- see rest_api.lua's cli_json_call for the
+  -- full rationale (a null ApexLog field, e.g. Operation, would otherwise
+  -- silently defeat every `field or default` below and downstream).
+  local ok, parsed = pcall(vim.json.decode, stdout_str, { luanil = { object = true } })
+  if not ok then
+    return {}, "Failed to parse log JSON!"
+  end
+
+  local result = parsed["result"] or {}
+  if not result or #result == 0 then
+    return {}, nil
+  end
+
+  local logs = {}
+  for _, log_entry in ipairs(result) do
+    local user_name = log_entry["LogUser"] and log_entry["LogUser"]["Name"] or ""
+    log_entry["User"] = user_name
+    log_entry["attributes"] = nil
+    log_entry["LogUser"] = nil
+
+    local record = {
+      id = log_entry["Id"],
+      user = user_name,
+      start_time = log_entry["StartTime"] or "",
+      size = log_entry["LogLength"] or 0,
+      status = log_entry["Status"] or "",
+      operation = log_entry["Operation"] or "",
+      raw = log_entry,
+    }
+    table.insert(logs, record)
+  end
+
+  return logs, nil
+end
+
 ---@param dir string
 ---@param on_done fun(path: string)
 helpers.pick_org_log = function(dir, on_done)
@@ -96,31 +208,26 @@ helpers.pick_org_log = function(dir, on_done)
   local log_id
 
   local on_list = function(obj)
-    local ok, log_table = pcall(vim.json.decode, obj.stdout, {})
-    if not ok then
-      return util.show_err("Failed to parse log JSON!")
+    local logs, parse_err = helpers.parse_log_list(obj.stdout)
+    if parse_err then
+      return util.show_err(parse_err)
     end
-
-    local logs = {}
-    local log_names = {}
-
-    if #log_table["result"] == 0 then
+    if #logs == 0 then
       return util.show_warn("No logs found in org")
     end
 
-    for _, v in ipairs(log_table["result"]) do
+    local log_names = {}
+    local logs_by_name = {}
+    for _, log_record in ipairs(logs) do
       local name = string.format(
         "%s | %s | %s | %s",
-        v["LogUser"]["Name"],
-        string.gsub(v["StartTime"], "T", " "),
-        util.format_bytes(v["LogLength"]),
-        v["Status"]
+        log_record.user,
+        string.gsub(log_record.start_time, "T", " "),
+        util.format_bytes(log_record.size),
+        log_record.status
       )
       table.insert(log_names, name)
-      v["User"] = v["LogUser"]["Name"]
-      v["attributes"] = nil
-      v["LogUser"] = nil
-      logs[name] = v
+      logs_by_name[name] = log_record.raw
     end
 
     require("fzf-lua").fzf_exec(log_names, {
@@ -135,14 +242,14 @@ helpers.pick_org_log = function(dir, on_done)
         local contents = {}
         local prepend_char = ""
         vim.tbl_map(function(x)
-          table.insert(contents, prepend_char .. util.table_to_string_lines(logs[x]))
+          table.insert(contents, prepend_char .. util.table_to_string_lines(logs_by_name[x]))
           prepend_char = "\n"
         end, items)
         return contents
       end,
       actions = {
         ["default"] = function(selected)
-          log_id = logs[selected[1]]["Id"]
+          log_id = logs_by_name[selected[1]]["Id"]
           helpers.download_log(log_id, dir, on_done)
         end,
       },
@@ -160,11 +267,17 @@ helpers.orgs = {} -- array of { alias, username, is_scratch, is_sandbox, is_prod
 helpers.open_org = function(alias)
   local cmd = cmd_builder:new():cmd("org"):act("open"):set_org(alias):build()
   local err_msg = "Command failed: " .. cmd
-  util.job_call(cmd, nil, err_msg)
+  -- Silent: dashboard-triggered (the "Open" action), which doesn't need a
+  -- "job starts" notification on top of its own UI -- errors still notify.
+  util.silent_job_call(cmd, nil, err_msg)
 end
 
 helpers.clean_org_cache = function()
-  helpers.orgs = {}
+  -- Clear in-place so that any external references (e.g. dashboard) still see
+  -- updates after a refresh.
+  while #helpers.orgs > 0 do
+    table.remove(helpers.orgs)
+  end
 end
 
 --- Flip the `is_default` flag onto `alias` and off every other cached org,
@@ -223,26 +336,33 @@ helpers.write_target_org_to_config = function(alias, global)
   return true
 end
 
+helpers.format_org_item = function(record)
+  local marker = record.is_default and "● " or "  "
+  local alias = record.alias or ""
+  local username = record.username or ""
+  return marker .. alias .. " (" .. username .. ")"
+end
+
 helpers.set_target_org = function()
   if vim.tbl_isempty(helpers.orgs) then
     return util.show_err("No orgs available. Run :SF org list first.")
   end
 
-  require("sf.ui.org_explorer").pick(helpers.orgs, {
-    prompt = "Local target_org",
-    on_open = function(record)
-      helpers.open_org(record.alias)
-    end,
-    on_choice = function(record)
-      local org = record.alias
-      local ok, err = helpers.write_target_org_to_config(org, false)
-      if not ok then
-        return util.show_err(org .. " - set target_org failed! " .. err)
-      end
-      helpers.mark_default(org)
-      util.set_target_org(org, record)
-    end,
-  })
+  vim.ui.select(helpers.orgs, {
+    prompt = "Local target_org:",
+    format_item = helpers.format_org_item,
+  }, function(record)
+    if record == nil then
+      return
+    end
+    local org = record.alias
+    local ok, err = helpers.write_target_org_to_config(org, false)
+    if not ok then
+      return util.show_err(org .. " - set target_org failed! " .. err)
+    end
+    helpers.mark_default(org)
+    util.set_target_org(org, record)
+  end)
 end
 
 helpers.set_global_target_org = function()
@@ -250,33 +370,43 @@ helpers.set_global_target_org = function()
     return util.show_err("No orgs available. Run :SF org list first.")
   end
 
-  require("sf.ui.org_explorer").pick(helpers.orgs, {
-    prompt = "Global target_org",
-    on_open = function(record)
-      helpers.open_org(record.alias)
-    end,
-    on_choice = function(record)
-      local org = record.alias
-      local ok, err = helpers.write_target_org_to_config(org, true)
-      if not ok then
-        return util.show_err(string.format("Global set target_org [%s] failed! %s", org, err))
-      end
-      helpers.mark_default(org)
-      util.set_target_org(org, record)
-      vim.notify("Global target_org set: " .. org, vim.log.levels.INFO)
-    end,
-  })
+  vim.ui.select(helpers.orgs, {
+    prompt = "Global target_org:",
+    format_item = helpers.format_org_item,
+  }, function(record)
+    if record == nil then
+      return
+    end
+    local org = record.alias
+    local ok, err = helpers.write_target_org_to_config(org, true)
+    if not ok then
+      return util.show_err(string.format("Global set target_org [%s] failed! %s", org, err))
+    end
+    helpers.mark_default(org)
+    util.set_target_org(org, record)
+    vim.notify("Global target_org set: " .. org, vim.log.levels.INFO)
+  end)
 end
 
 ---@param data string
 helpers.store_orgs = function(data)
+  -- Clear in-place so that any external references (e.g. dashboard)
+  -- still see updates after a refresh. Must happen on the arrival path,
+  -- not the dispatch path, so overlapping fetches become last-writer-wins
+  -- instead of additive.
+  helpers.clean_org_cache()
+
   local s = ""
   for _, v in ipairs(data) do
     s = s .. v
   end
 
-  local org_data = vim.json.decode(s, {}).result.nonScratchOrgs
-  local scratch_org_data = vim.json.decode(s, {}).result.scratchOrgs
+  -- luanil = { object = true }: decode JSON null as Lua nil, not the
+  -- truthy vim.NIL sentinel -- see rest_api.lua's cli_json_call for the
+  -- full rationale (applies equally to a null `alias`/`expirationDate` here).
+  local decode_opts = { luanil = { object = true } }
+  local org_data = vim.json.decode(s, decode_opts).result.nonScratchOrgs
+  local scratch_org_data = vim.json.decode(s, decode_opts).result.scratchOrgs
 
   for i = 1, #scratch_org_data do
     org_data[#org_data + 1] = scratch_org_data[i]
@@ -293,6 +423,7 @@ helpers.store_orgs = function(data)
       is_sandbox = is_sandbox,
       is_prod = not is_scratch and not is_sandbox,
       is_default = v.isDefaultUsername == true,
+      is_default_devhub = v.isDefaultDevHubUsername == true,
       expiration_date = v.expirationDate,
     }
 
@@ -306,20 +437,23 @@ helpers.store_orgs = function(data)
   Org.refresh_target_org_from_disk()
 end
 
-helpers.fetch_and_store_orgs = function()
+helpers.fetch_and_store_orgs = function(on_done)
   vim.fn.jobstart("sf org list --json --skip-connection-status", {
     stdout_buffered = true,
     on_stdout = function(_, data)
       helpers.store_orgs(data)
     end,
+    on_exit = function()
+      if on_done then
+        on_done()
+      end
+    end,
   })
 end
 
-helpers.fetch_org_list = function()
+helpers.fetch_org_list = function(on_done)
   util.is_sf_cmd_installed()
-
-  helpers.clean_org_cache()
-  helpers.fetch_and_store_orgs()
+  helpers.fetch_and_store_orgs(on_done)
 end
 
 --- Read "target-org" from the project's `.sf/config.json`, falling back to
@@ -384,15 +518,15 @@ helpers.diff_in_org = function()
     return util.show_err("No orgs available. Run :SF org list first.")
   end
 
-  require("sf.ui.org_explorer").pick(helpers.orgs, {
-    prompt = "Diff in org",
-    on_open = function(record)
-      helpers.open_org(record.alias)
-    end,
-    on_choice = function(record)
-      helpers.diff_in(record.alias)
-    end,
-  })
+  vim.ui.select(helpers.orgs, {
+    prompt = "Diff in org:",
+    format_item = helpers.format_org_item,
+  }, function(record)
+    if record == nil then
+      return
+    end
+    helpers.diff_in(record.alias)
+  end)
 end
 
 ---@param org string

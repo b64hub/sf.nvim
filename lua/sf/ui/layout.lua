@@ -1,6 +1,7 @@
 -- Floating-window geometry for named corner positions, used by the
 -- restyled SFTerm float (and, in a later phase, the progress widget).
-local M = {}
+-- Also provides a split-pane geometry helper for side-by-side floats.
+local layout = {}
 
 --- @return boolean
 local function has_tabline()
@@ -22,7 +23,7 @@ end
 --- statusline and the command line, so the float never overlaps them.
 --- @param opts table { position, width, height, margin = { row, col } }
 --- @return table { row, col, width, height }
-function M.float_geometry(opts)
+function layout.float_geometry(opts)
   local margin = opts.margin or {}
   local mrow = margin.row or 0
   local mcol = margin.col or 0
@@ -66,8 +67,42 @@ end
 --- several spinner handles can stack without overlapping.
 --- @param n integer
 --- @return integer
-function M.stack_offset(n)
+function layout.stack_offset(n)
   return n * 3 -- 1-line content + 2 border cells per stacked float
 end
 
-return M
+--- Split an outer box left/right into two adjacent bordered floats.
+--- Both floats share the same row and height. The outer geometry is computed
+--- once (respecting margins/position), then split horizontally accounting for
+--- both floats' borders so they never overlap.
+--- @param opts table { position, width, height, left_ratio = 0.3, margin = { row, col } }
+--- @return table { left = {row,col,width,height}, right = {row,col,width,height} }
+function layout.float_geometry_pair(opts)
+  local left_ratio = opts.left_ratio or 0.3
+  local outer = layout.float_geometry(opts)
+
+  -- The outer box already has width/height as content dimensions (borders
+  -- subtracted). When we split for two adjacent bordered floats, the right
+  -- float's left border (1 cell) and the left float's right border (1 cell)
+  -- consume 2 cells of the available width.
+  local gap = 2 -- space consumed by the two adjacent borders
+  local left_width = math.max(math.floor((outer.width - gap) * left_ratio), 1)
+  local right_width = math.max(outer.width - gap - left_width, 1)
+
+  return {
+    left = {
+      row = outer.row,
+      col = outer.col,
+      width = left_width,
+      height = outer.height,
+    },
+    right = {
+      row = outer.row,
+      col = outer.col + left_width + gap,
+      width = right_width,
+      height = outer.height,
+    },
+  }
+end
+
+return layout

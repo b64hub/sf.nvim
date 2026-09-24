@@ -523,8 +523,9 @@ local MAX_TRACE_FLAG_MINUTES = 24 * 60
 --- `SFNVIM_REPLAY` DebugLevel and an active TraceFlag, for the current org
 --- user by default.
 --- @param opts number|table|nil number = minutes (back-compat shorthand), or
----   `{ minutes = number, user = string }`. `user` is a username/email/Id to
----   trace instead of the org's own user. minutes defaults to
+---   `{ minutes = number, user = string, alias = string }`. `user` is a
+---   username/email/Id to trace instead of the org's own user. `alias` is an
+---   org alias to target instead of the global target_org. minutes defaults to
 ---   `replay_debugger.trace_flag_hours * 60`, capped at 24h.
 Debug.enable_replay_logging = function(opts)
   opts = type(opts) == "number" and { minutes = opts } or (opts or {})
@@ -533,11 +534,15 @@ Debug.enable_replay_logging = function(opts)
   if not Api.has_curl() then
     return U.show_err("sf.nvim: `curl` is required for replay logging (Tooling API calls).")
   end
-  if U.is_empty_str(U.target_org) then
+  if not opts.alias and U.is_empty_str(U.target_org) then
     return U.show_err("sf.nvim: Target_org empty!")
   end
 
-  Api.get_session(function(session, err)
+  -- `Api.get_session(nil, cb)` behaves identically to `Api.get_session(cb)`
+  -- (its own dispatch treats a non-function first argument as the alias,
+  -- and a nil alias skips the `set_org` override) -- so a single call
+  -- covers both the alias and no-alias cases, no branch needed.
+  Api.get_session(opts.alias, function(session, err)
     if not session then
       return U.show_err("sf.nvim: " .. err)
     end
