@@ -225,7 +225,7 @@ T["open_org"] = new_set({
     pre_case = function()
       child.lua([[
         util = require("sf.util")
-        util.job_call = function() end
+        util.silent_job_call = function() end
         M = require('sf.org')
       ]])
     end,
@@ -297,6 +297,47 @@ T["parse_log_list"]["returns error on invalid JSON"] = function()
   
   eq(child.lua_get([[#logs]]), 0)
   expect.match(child.lua_get([[err]]), "Failed")
+end
+
+T["parse_log_list"]["parses Operation field from log entries"] = function()
+  child.lua([=[
+    local json = [[
+      {
+        "result": [
+          {
+            "Id": "log1",
+            "LogUser": { "Name": "alice" },
+            "StartTime": "2024-01-01T10:00:00.000+0000",
+            "LogLength": 1024,
+            "Status": "Success",
+            "Operation": "/aura"
+          },
+          {
+            "Id": "log2",
+            "LogUser": { "Name": "bob" },
+            "StartTime": "2024-01-02T11:00:00.000+0000",
+            "LogLength": 2048,
+            "Status": "Success",
+            "Operation": "AsyncQueued execution of MyJob"
+          },
+          {
+            "Id": "log3",
+            "LogUser": { "Name": "carol" },
+            "StartTime": "2024-01-03T12:00:00.000+0000",
+            "LogLength": 512,
+            "Status": "Error"
+          }
+        ]
+      }
+    ]]
+    logs, err = H.parse_log_list(json)
+  ]=])
+
+  eq(child.lua_get([[#logs]]), 3)
+  eq(child.lua_get([[logs[1].operation]]), "/aura")
+  eq(child.lua_get([[logs[2].operation]]), "AsyncQueued execution of MyJob")
+  -- Record without Operation field should have empty string
+  eq(child.lua_get([[logs[3].operation]]), "")
 end
 
 T["open_dashboard"] = new_set()

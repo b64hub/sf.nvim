@@ -8,12 +8,39 @@ local Layout = require("sf.ui.layout")
 local org_view = require("sf.ui.org_view")
 local dashboard_views = require("sf.ui.dashboard_views")
 local Org = require("sf.org")
+local rest_api = require("sf.sub.rest_api")
 
 local dashboard = {}
 
 -- Singleton guard: hold the active session so only one dashboard instance
 -- can be open at a time.
 local active_session = nil
+
+--- Handle a winbar tab click. Called by Neovim's winbar click routing.
+---@param minwid number 1-based index into views.tab_views(), passed by Neovim
+---@param clicks number number of clicks (unused, but part of the Neovim signature)
+---@param button string mouse button (unused, but part of the Neovim signature)
+---@param modifiers string key modifiers (unused, but part of the Neovim signature)
+function dashboard.handle_tab_click(minwid, clicks, button, modifiers)
+  if not active_session or not vim.api.nvim_win_is_valid(active_session.list_window) then
+    return
+  end
+
+  local tabs = dashboard_views.tab_views()
+  if minwid < 1 or minwid > #tabs then
+    return
+  end
+
+  local tab_view = tabs[minwid]
+  active_session.active_view_id = tab_view.id
+  active_session.filter_query = nil
+  active_session.update_tab_strip()
+  active_session.show_view(active_session.current_record(), tab_view.id)
+
+  if vim.api.nvim_win_is_valid(active_session.list_window) then
+    vim.api.nvim_set_current_win(active_session.list_window)
+  end
+end
 
 --- Open a split-pane dashboard showing orgs on the left, details on the right.
 ---@param records table[] org records (alias, username, is_scratch, is_sandbox, is_prod, is_default, is_default_devhub, expiration_date)
@@ -58,16 +85,25 @@ function dashboard.open(records, opts)
     spinner_timer = nil,
     filter_query = nil, -- current filter query for logs view
     filtered_logs = {}, -- keeps track of log ids in rendered order for download mapping
-    view_header_lines = 0, -- number of header lines (tabs + blank line) in the view buffer
   }
 
-  local footer_for = function()
+  -- Left pane (org list) footer: org-identity actions -- which org this is
+  -- and what to do with it (set as target, open in browser).
+  local footer_for_list = function()
     local parts = {}
-    -- Only show action-only views in the footer, not tab views (those are in the strip)
-    for _, view_desc in ipairs(dashboard_views.action_views()) do
+    for _, view_desc in ipairs(dashboard_views.action_views("left")) do
       table.insert(parts, view_desc.key .. " " .. view_desc.label)
     end
-    -- Add dashboard-level keys that have no descriptor
+    return " " .. table.concat(parts, " · ") .. " "
+  end
+
+  -- Right pane (detail view) footer: misc/view-scoped actions plus
+  -- dashboard-level keys that have no descriptor.
+  local footer_for_view = function()
+    local parts = {}
+    for _, view_desc in ipairs(dashboard_views.action_views("right")) do
+      table.insert(parts, view_desc.key .. " " .. view_desc.label)
+    end
     table.insert(parts, "f filter")
     table.insert(parts, "r refresh")
     table.insert(parts, "q close")
@@ -93,7 +129,7 @@ function dashboard.open(records, opts)
     title_pos = "left",
   }
   if has_footer then
-    list_win_opts.footer = { { footer_for(), "SfFooter" } }
+    list_win_opts.footer = { { footer_for_list(), "SfFooter" } }
     list_win_opts.footer_pos = "left"
   end
 
@@ -129,7 +165,7 @@ function dashboard.open(records, opts)
     title_pos = "left",
   }
   if has_footer then
-    view_win_opts.footer = { { footer_for(), "SfFooter" } }
+    view_win_opts.footer = { { footer_for_view(), "SfFooter" } }
     view_win_opts.footer_pos = "left"
   end
 
@@ -155,7 +191,7 @@ function dashboard.open(records, opts)
   vim.api.nvim_win_set_option(
     view_window,
     "winhl",
-    "Normal:SfNormal,FloatBorder:SfBorder,FloatTitle:SfTitle,FloatFooter:SfFooter"
+    "Normal:SfNormal,FloatBorder:SfBorder,FloatTitle:SfTitle,FloatFooter:SfFooter,WinBar:SfNormal,WinBarNC:SfNormal"
   )
 
   local stop_spinner = function()
@@ -192,10 +228,19 @@ function dashboard.open(records, opts)
       title_pos = "left",
     }
     if has_footer then
-      cfg.footer = { { footer_for(), "SfFooter" } }
+      cfg.footer = { { footer_for_view(), "SfFooter" } }
       cfg.footer_pos = "left"
     end
     vim.api.nvim_win_set_config(session.view_window, cfg)
+  end
+
+  -- Update the winbar with the current tab strip and highlights
+  local update_tab_strip = function()
+    if not vim.api.nvim_win_is_valid(session.view_window) then
+      return
+    end
+    local winbar_text = dashboard_views.render_winbar(session.active_view_id)
+    vim.wo[session.view_window].winbar = winbar_text
   end
 
   local paint_view = function(record, frame)
@@ -238,22 +283,60 @@ function dashboard.open(records, opts)
       line_hls = { {} }
     end
 
-    -- Prepend the tab strip to the content
-    local view_width = geometry_pair.right.width
-    local strip_lines, strip_hls = dashboard_views.render_tab_strip(session.active_view_id, view_width)
-    local header_lines = {}
-    local header_hls = {}
-    vim.list_extend(header_lines, strip_lines)
-    vim.list_extend(header_hls, strip_hls)
-    -- Add a blank separator line
-    table.insert(header_lines, "")
-    table.insert(header_hls, {})
-    session.view_header_lines = #header_lines
+    org_view.paint(session.view_buffer, lines, line_hls)
+  end
 
-    vim.list_extend(header_lines, lines)
-    vim.list_extend(header_hls, line_hls)
+  -- Fetch a view into cache without a spinner (used for prefetching background views).
+  -- Returns immediately when cache already has data or a fetch is in-flight.
+  -- on_painted is optional; prefetch uses it to selectively re-render only when
+  -- safe (active view, matching record, valid window).
+  local fetch_view_into_cache = function(record, view_id, on_painted)
+    local cache_key = record.alias .. ":" .. view_id
+    local cached = session.cache[cache_key]
 
-    org_view.paint(session.view_buffer, header_lines, header_hls)
+    -- Cache hit or fetching: return immediately
+    if cached and (cached.data or cached.fetching) then
+      return
+    end
+
+    local view_desc = get_view_descriptor(view_id)
+    if not view_desc then
+      return
+    end
+
+    local current_gen = session.generation
+    session.cache[cache_key] = { fetching = true, data = nil }
+
+    view_desc.fetch(record, function(result, err)
+      if current_gen ~= session.generation then
+        return
+      end
+      session.cache[cache_key] = { fetching = false, data = result, err = err }
+      if on_painted then
+        on_painted()
+      end
+    end)
+  end
+
+  -- Prefetch all tab views for a record (used for background warming).
+  -- Repaints only when all guards pass: active_view_id matches, record alias
+  -- matches, and window is valid. No spinner is shown for prefetched views.
+  -- ponytail: fixed 5 tab views fired at once; upgrade to concurrency cap
+  -- or opt-out flag if registry grows large or metered-link users complain.
+  local prefetch_record_views = function(record)
+    for _, tab_desc in ipairs(dashboard_views.tab_views()) do
+      fetch_view_into_cache(record, tab_desc.id, function()
+        -- Only repaint if this view is now the active one, the record hasn't
+        -- changed, and the window is still open.
+        if
+          tab_desc.id == session.active_view_id
+          and record.alias == (current_record() or {}).alias
+          and vim.api.nvim_win_is_valid(session.view_window)
+        then
+          paint_view(record, 0)
+        end
+      end)
+    end
   end
 
   local show_view = function(record, view_id)
@@ -334,6 +417,8 @@ function dashboard.open(records, opts)
     local record = current_record()
     if record then
       show_view(record, session.active_view_id)
+      -- Prefetch all other tabs for this record in the background
+      prefetch_record_views(record)
     end
   end
 
@@ -365,6 +450,7 @@ function dashboard.open(records, opts)
   -- Overlapping fetch-org-list calls now resolve via last-writer-wins in
   -- helpers.store_orgs (Phase 1 fix), so no additional in-flight guard is needed.
   vim.keymap.set("n", "r", function()
+    rest_api.invalidate_org_display()
     session.cache = {}
     session.generation = session.generation + 1
     Org.fetch_org_list(function()
@@ -388,21 +474,94 @@ function dashboard.open(records, opts)
     end
   end, { buffer = session.list_buffer, nowait = true })
 
+  -- Tab cycling: factor the view-switch body so both registry keys and arrow keys use it
+  local tab_switch_body = function(view_id)
+    session.active_view_id = view_id
+    update_view_title()
+    update_tab_strip()
+    session.filter_query = nil
+    local record = current_record()
+    if record then
+      show_view(record, view_id)
+    end
+  end
+
+  -- Cycle tabs with <Right> and <Left> (and h/l for vi mode)
+  local cycle_tab = function(step)
+    local tabs = dashboard_views.tab_views()
+    if #tabs == 0 then
+      return
+    end
+    local current_index = 1
+    for i, view_desc in ipairs(tabs) do
+      if view_desc.id == session.active_view_id then
+        current_index = i
+        break
+      end
+    end
+    local next_index = ((current_index - 1 + step) % #tabs) + 1
+    tab_switch_body(tabs[next_index].id)
+  end
+
+  vim.keymap.set("n", "<Right>", function()
+    cycle_tab(1)
+  end, { buffer = session.list_buffer, nowait = true })
+
+  vim.keymap.set("n", "<Left>", function()
+    cycle_tab(-1)
+  end, { buffer = session.list_buffer, nowait = true })
+
+  vim.keymap.set("n", "l", function()
+    cycle_tab(1)
+  end, { buffer = session.list_buffer, nowait = true })
+
+  vim.keymap.set("n", "h", function()
+    cycle_tab(-1)
+  end, { buffer = session.list_buffer, nowait = true })
+
+  -- Factor scroll logic into a helper for reuse with <C-d>/<C-u> and arrow keys
+  local scroll_view_pane = function(normal_keys)
+    if vim.api.nvim_win_is_valid(session.view_window) then
+      vim.api.nvim_win_call(session.view_window, function()
+        vim.cmd("normal! " .. normal_keys)
+      end)
+    end
+  end
+
+  -- Scroll view window with <C-d> and <C-u> (down/up half page)
+  vim.keymap.set("n", "<C-d>", function()
+    scroll_view_pane("\4")
+  end, { buffer = session.list_buffer, nowait = true })
+
+  vim.keymap.set("n", "<C-u>", function()
+    scroll_view_pane("\21")
+  end, { buffer = session.list_buffer, nowait = true })
+
+  -- Arrow keys navigate the view pane (not the org list)
+  -- <Up>/<Down> move cursor one line in the view window
+  vim.keymap.set("n", "<Down>", function()
+    scroll_view_pane("j")
+  end, { buffer = session.list_buffer, nowait = true })
+
+  vim.keymap.set("n", "<Up>", function()
+    scroll_view_pane("k")
+  end, { buffer = session.list_buffer, nowait = true })
+
   -- Download log on <CR> -- bound on the VIEW buffer, not the list buffer:
   -- the list buffer's cursor row indexes into `records` (which org), not
   -- into `session.filtered_logs` (which log). A user downloads a specific
   -- log by moving focus into the view pane (e.g. <C-w>w) and placing the
   -- cursor on that log's line, so nvim_win_get_cursor(session.view_window)
-  -- is only meaningful there. Subtract the header offset (tab strip + blank line)
-  -- to get the actual log index.
+  -- is only meaningful there.
+  -- Row 1 is the logs table's header (see dashboard_views.lua's logs
+  -- view), so it's offset by one from `session.filtered_logs`.
   vim.keymap.set("n", "<CR>", function()
     if session.active_view_id ~= "logs" then
       return
     end
-    local view_row = vim.api.nvim_win_get_cursor(session.view_window)[1]
-    local log_index = view_row - session.view_header_lines
-    if log_index >= 1 and log_index <= #session.filtered_logs then
-      local log_record = session.filtered_logs[log_index]
+    local view_row = vim.api.nvim_win_get_cursor(session.view_window)[1] - 1
+    if view_row > 0 and view_row <= #session.filtered_logs then
+      local log_record = session.filtered_logs[view_row]
       local log_dir = util.get_plugin_folder_path() .. "logs/"
       Org.download_log(log_record.id, log_dir, function(path)
         util.try_open_file(path)
@@ -425,13 +584,30 @@ function dashboard.open(records, opts)
           view_desc.action(record, dashboard_api)
         else
           -- Fetch+render entry: show the view
-          session.active_view_id = view_id
-          update_view_title()
-          session.filter_query = nil -- Reset filter when switching views
-          show_view(record, view_id)
+          tab_switch_body(view_id)
         end
       end
     end, { buffer = session.list_buffer, nowait = true })
+  end
+
+  -- Attach helper functions to session so handle_tab_click can access them
+  session.show_view = show_view
+  session.current_record = current_record
+  session.update_tab_strip = update_tab_strip
+
+  -- Initialize the winbar with the current tab strip
+  update_tab_strip()
+
+  -- Eager warm-up: prefetch all views for default org + devhub (de-duplicated by alias).
+  -- Skip if only one record (cursor-landed prefetch already covers it).
+  if #records > 1 then
+    local warmed_aliases = {}
+    for _, record in ipairs(records) do
+      if (record.is_default or record.is_default_devhub) and not warmed_aliases[record.alias] then
+        warmed_aliases[record.alias] = true
+        prefetch_record_views(record)
+      end
+    end
   end
 
   -- Fetch view for the first org

@@ -631,3 +631,498 @@ Rationale:
   and the Step 19 revert are one behavioural change spanning both files;
   splitting them ships a dashboard whose tabs are painted twice or not
   at all.
+
+---
+
+# Round 3 — perf (prefetch), arrow-key nav, theme/dimming, richer incidents
+
+Follow-up round driven by user feedback after Rounds 1-2 shipped.
+Continues the numbering above (Phase 10 starts at Step 32).
+
+## Findings before Step 32 (read this; do not re-derive)
+
+### Already fixed outside this plan — do not re-propose
+
+`vim.json.decode` turns JSON `null` into `vim.NIL`, a **truthy** userdata
+sentinel, not Lua `nil` — so every `field or default` fallback silently
+kept `vim.NIL` (an unmanaged package's null `NamespacePrefix` crashed
+`org_view.render_columns` with *"attempt to get length of a userdata
+value"*). Fixed at every decode boundary feeding the dashboard
+(`rest_api.lua`'s `cli_json_call` + `curl_json`, `org_view.lua`'s
+`fetch_org_display`, `org.lua`'s `parse_log_list` + `store_orgs`) with
+`{ luanil = { object = true } }`, plus defence-in-depth in
+`render_columns` (`safe_cell_text`) and `flatten_package_row`
+(type-checked accessors). Verified against the live `tn-dev` org (50 real
+packages, most with null `NamespacePrefix`). Tests added in
+`tests/test_rest_api.lua`, `tests/test_org_view.lua`,
+`tests/test_dashboard_views.lua`. **208/208 green.** Nothing further here.
+
+### ROOT CAUSE of the 5-10s open: five identical `sf org display` spawns
+
+Measured in this environment: `sf org display --json -o tn-dev` takes
+**6.8s** wall clock. That single number explains the user's complaint —
+but the bigger finding is *how many times we pay it*.
+
+`rest_api.get_session` (line 62) and `org_view.fetch_org_display`
+(line 313) build the **byte-identical** command
+`sf org display --json -o <alias>`, and **neither caches anything**
+(`grep -c cache lua/sf/sub/rest_api.lua` → 0). Grepping the fetch call
+sites in `dashboard_views.lua`:
+
+| Tab view | Calls | `sf org display` spawns |
+|---|---|---|
+| `details` | `fetch_org_display` **and** `get_session` | **2** |
+| `trace_flags` | `get_session` | 1 |
+| `limits` | `get_session` | 1 |
+| `packages` | `get_session` | 1 |
+| `logs` | `Org.list_org_logs` (`sf apex list log`) | 0 (different cmd) |
+
+So **the `details` tab alone spawns two concurrent identical 6.8s CLI
+calls**, and prefetching all five tab views for one org would spawn
+**five identical `sf org display` calls plus one `sf apex list log`** —
+six Node processes for one org. Eagerly prefetching the default org *and*
+the devhub *and* the cursor-landed record would put 12-18 concurrent Node
+processes on the machine.
+
+**Therefore: deduplicating `sf org display` is a hard prerequisite for
+prefetching, not an optional nicety.** Prefetch built on today's code
+would make the dashboard slower and hammer the machine. Phase 10 must
+land before Phase 11. This is also exactly what AGENTS.md's "prefer the
+API, `sf` CLI spawns a Node process per invocation" rationale is about.
+
+In-flight **coalescing matters more than a TTL cache** here: the prefetch
+case is N simultaneous callers for the same alias, all of which miss an
+empty cache and all of which would spawn. One spawn with N queued
+callbacks is the actual fix.
+
+### Nav keys have ZERO test coverage today
+
+Phase 6 Step 23 planned tests for `<Right>`/`<Left>`/`<C-d>`/`<C-u>`/`j`
+— **they were never written** (the Round-2 worker timed out mid-run).
+`grep -c 'Left\|Right\|Up>\|Down>\|C-d\|C-u' tests/test_org_dashboard.lua`
+→ **0**. The only `nvim_input("j")` uses are incidental cursor moves
+inside action tests. Item 1 therefore changes *untested* behaviour;
+Phase 12 must add coverage for the whole final key contract, not just the
+two keys whose meaning changes.
+
+### Prefetch must NOT reuse `show_view` — spinner/paint bugs
+
+Read `show_view` and `paint_view` carefully before writing Phase 11:
+
+- `session.spinner_timer` is a **single shared slot**. `show_view` calls
+  `stop_spinner()` then installs a new timer. If a prefetch reused
+  `show_view`, **the first prefetched view to complete would call
+  `stop_spinner()` and freeze the visible spinner of the tab the user is
+  actually looking at.**
+- `paint_view(record, frame)` derives its cache key from
+  `session.active_view_id`, **not** from the view that just finished. A
+  prefetch completion calling `paint_view` would repaint the *active*
+  tab — harmless-looking but it re-renders on every prefetch completion,
+  and paints spinner frame 0 over a live animation.
+- `paint_view` also does not check that `record` is still the record
+  under the cursor, so a late completion for org A can paint into org B's
+  pane.
+
+Resolution (Phase 11): prefetched views get **no spinner at all** — the
+user is not looking at them, so there is nothing to animate. Only the
+active view animates. A prefetch completion paints **only if** its
+`view_id == session.active_view_id`, its `record.alias` still matches
+`current_record().alias`, and its captured generation still matches.
+
+### `SfTitle` is doing two incompatible jobs
+
+`SfTitle` is `{ fg = "#101418", bg = accent, bold = true }` — a solid
+filled block, correct for a float title and for the winbar's active tab.
+But `append_table_section` and the limits/packages renders **also** use
+`SfTitle` for table header rows, and `render_columns` applies a row
+highlight across the **whole line** (`col_start = 0, col_end = #line`).
+Result: the Status view paints **four full-width solid blue bars**
+(Products, Maintenances, Messages, Incidents headers), plus one each in
+Limits and Packages. That is the single worst styling inconsistency in
+the dashboard and is item 3's most visible win.
+
+### Every incident renders as a warning, even long-resolved ones
+
+`render_status_section`'s incident loop applies `SfWarn` to **every**
+incident unconditionally. Real `tn-dev` data: **all 6 incidents are
+`status = "Resolved"`**, the newest impact ended weeks ago, and the
+instance `status` is `OK`. So a perfectly healthy org shows six yellow
+warning lines. Items 3 and 4 fix this together.
+
+### Incident payload — real field evidence (live `tn-dev`)
+
+Per incident: `id` (**number**), `status`, `type`, `createdAt`,
+`updatedAt`, `additionalInformation`, `message` (object of
+`rootCause`/`actionPlan`/`pathToResolution`, usually all null), and
+`IncidentImpacts[]` whose entries carry `startTime`, `endTime`,
+`severity`, `type`.
+
+`parse_instance_status` currently keeps only
+`{id, status, type, severity, message}` — **`createdAt`/`updatedAt` and
+all impact times are parsed nowhere.**
+
+Observed on all 6 records:
+
+- incident-level `type` is `"Degradation"` for **every** record — low
+  information.
+- impact-level `type` is more specific: `featurePerfDegradation` vs
+  `featureServiceDisruption`.
+- **impact `startTime`/`endTime` is the useful pair** (when customers
+  were actually affected, e.g. `2026-08-19T07:38` → `2026-08-23T11:20`).
+  `createdAt`/`updatedAt` describe the incident *record's* lifecycle and
+  are consistently *later* than impact start — less useful to show.
+
+Decision for Phase 14: show **impact start/end**, keep `createdAt` parsed
+but unrendered (one extra field costs nothing and answers "when was this
+reported"), and prefer impact-level `type` over incident-level `type`
+since the latter is a constant.
+
+### Semantic colours must stay semantic
+
+`SfSuccess`/`SfWarn`/`SfError` link to
+`DiagnosticOk`/`DiagnosticWarn`/`DiagnosticError` so they follow the
+user's colorscheme. "Shift the whole theme to a more subtle blue" applies
+to **chrome** (borders, titles, headers, dim text, spinner, icon), **not**
+to status semantics — a red incident must not become blue. Phase 13 keeps
+the diagnostic links untouched and only re-derives chrome.
+
+---
+
+## Phases
+
+### Phase 10 — Deduplicate `sf org display` (prerequisite for Phase 11)
+
+32. `lua/sf/sub/rest_api.lua`: add a module-local cache + in-flight
+    coalescer for the raw `sf org display --json [-o alias]` result, and
+    one public accessor `rest_api.get_org_display(alias, callback)`
+    returning the decoded `result` table.
+    - Cache key: the alias, or a fixed sentinel (e.g. `"<target>"`) when
+      no alias is passed, so the existing `get_session(cb)` form shares
+      correctly with `get_session(alias, cb)` for the same org.
+    - **Coalesce in flight**: an entry is
+      `{ result = ..., err = ..., fetched_at = ..., waiters = { cb, ... } }`.
+      A call that finds a live in-flight entry appends its callback to
+      `waiters` and returns *without spawning*; completion drains
+      `waiters`. This is the part that actually fixes the prefetch
+      thundering herd.
+    - **TTL**: access tokens expire, so cache entries must not live
+      forever. Use a short module-local TTL constant (e.g. 300s) checked
+      against `vim.uv.now()`. Do **not** cache failures — an errored
+      lookup must be retried on the next call.
+    - `rest_api.invalidate_org_display(alias)` (alias optional → clear
+      all) so the dashboard's `r` refresh can drop it.
+33. `lua/sf/sub/rest_api.lua`: rewrite `get_session` as a thin projection
+    over Step 32 — `get_org_display(alias, ...)` then map to
+    `{ token, url, api_version, username }` with the existing
+    `accessToken`-missing guard and error text unchanged. **Public
+    behaviour and signature (both the `get_session(cb)` and
+    `get_session(alias, cb)` forms) must not change**; the three existing
+    cases in `tests/test_rest_api.lua` must pass untouched.
+    Test: extend `tests/test_rest_api.lua` — (a) two `get_session` calls
+    for the same alias issued back-to-back spawn `silent_system_call`
+    **once** and both callbacks receive the session (coalescing); (b) a
+    third call after `invalidate_org_display` spawns again; (c) an errored
+    first call is not cached — the next call re-spawns.
+34. `lua/sf/ui/org_view.lua`: `fetch_org_display` stops building its own
+    `cmd_builder` command and calls `rest_api.get_org_display(record.alias, ...)`
+    instead, keeping its existing `(detail, err)` callback contract and
+    its "could not parse" error string. This is what collapses the
+    `details` tab from two identical 6.8s spawns to one shared spawn.
+    Keep the doc-comment's performance note but update it to say the call
+    is now shared and cached.
+    Test: `tests/test_org_view.lua` — stub `rest_api.get_org_display` and
+    assert `fetch_org_display` forwards the alias and surfaces both the
+    success and error paths; assert it no longer calls `vim.system`
+    directly (the anti-regression for the dedupe).
+35. `lua/sf/ui/org_dashboard.lua`: the `r` refresh keymap additionally
+    calls `rest_api.invalidate_org_display()` before
+    `Org.fetch_org_list`, so `r` is a true "refetch everything" and not
+    "refetch the org list but keep stale sessions".
+    Test: extend the existing `refresh key 'r'` case in
+    `tests/test_org_dashboard.lua` with a spy asserting the invalidate
+    call fires.
+
+### Phase 11 — Prefetch every tab view per record
+
+36. `lua/sf/ui/org_dashboard.lua`: extract the cache-write half of
+    `show_view` into one local
+    `local fetch_view_into_cache = function(record, view_id, on_painted)`
+    that: returns immediately when the cache entry already has `data` or
+    `fetching`; looks up the descriptor; captures
+    `local current_gen = session.generation`; sets
+    `session.cache[cache_key] = { fetching = true }`; calls
+    `view_desc.fetch`; on completion bails on generation mismatch, writes
+    `{ fetching = false, data = ..., err = ... }`, and invokes
+    `on_painted` (if given). **No spinner logic in here.** `show_view`
+    keeps its existing spinner behaviour and is rewritten to call this
+    helper for the fetch, so there is exactly one cache-write path — do
+    not create a second caching mechanism.
+37. `lua/sf/ui/org_dashboard.lua`: add
+    `local prefetch_record_views = function(record)` that iterates
+    `dashboard_views.tab_views()` and calls `fetch_view_into_cache` for
+    each, passing an `on_painted` that repaints **only when all three
+    guards hold**: the completed `view_id == session.active_view_id`,
+    `record.alias == (current_record() or {}).alias`, and the window is
+    valid. Action-only entries are skipped by construction
+    (`tab_views()` already excludes them). No spinner is installed for
+    prefetched views — see the findings note.
+38. `lua/sf/ui/org_dashboard.lua`: eager warm-up, called once right after
+    the two windows exist and `update_tab_strip()` has run. Collect the
+    records with `record.is_default` and `record.is_default_devhub`,
+    de-duplicated by alias (one org is frequently both), and call
+    `prefetch_record_views` on each. Skip entirely when `#records == 1`
+    (the cursor-landed prefetch already covers it). The existing cache
+    check makes a double-fire with Step 39 free of extra spawns, so no
+    extra bookkeeping is needed.
+39. `lua/sf/ui/org_dashboard.lua`: `on_cursor_move` becomes
+    `show_view(record, session.active_view_id)` (unchanged — the active
+    tab still gets its spinner) **followed by** `prefetch_record_views(record)`
+    for the remaining tabs. Order matters: the active view must claim the
+    spinner slot first.
+    Test (`tests/test_org_dashboard.lua`), with fake tab views registered
+    the way the existing `cache_probe` case does, each counting its own
+    fetches: (a) after `dashboard.open`, every fake tab view's fetch has
+    fired exactly once for the default org without any tab being
+    selected; (b) switching to a prefetched tab paints immediately and
+    does **not** fetch again (cache hit — extends the existing
+    `cache hit prevents re-fetch` case to the prefetch path); (c) moving
+    the cursor to a second org fires each fake view's fetch exactly once
+    more for that alias; (d) a prefetch completing while a *different*
+    tab is active does not repaint the active tab — assert via a render
+    spy on the active view that its render count is unchanged (this is
+    the guard from Step 37 and the anti-regression for the spinner bug);
+    (e) `#records == 1` performs no eager prefetch beyond the
+    cursor-landed one (fetch counts stay at one per view).
+40. **Deliberate non-goal**, recorded so it is not re-litigated: no
+    config flag to disable prefetching, no job queue, no worker pool.
+    With Phase 10 in place a full-org prefetch is **one** `sf org
+    display` plus one `sf apex list log` plus three cheap `curl` calls.
+    Carry a `ponytail:` comment on `prefetch_record_views` naming the
+    ceiling (fixed 5 tab views, all fired at once) and the upgrade path
+    (a concurrency cap or an opt-out flag) if the registry ever grows
+    large or a user on a metered link complains.
+
+### Phase 12 — Arrow keys navigate the view pane
+
+41. `lua/sf/ui/org_dashboard.lua`: factor the existing `<C-d>`/`<C-u>`
+    bodies into one local
+    `local scroll_view_pane = function(normal_keys)` that guards
+    `nvim_win_is_valid(session.view_window)` and runs
+    `vim.api.nvim_win_call(session.view_window, function() vim.cmd("normal! " .. normal_keys) end)`.
+    Rebind `<C-d>` → `"\4"` and `<C-u>` → `"\21"` through it (behaviour
+    unchanged, one implementation instead of two copies).
+42. `lua/sf/ui/org_dashboard.lua`: bind `<Down>` → `scroll_view_pane("j")`
+    and `<Up>` → `scroll_view_pane("k")` on `session.list_buffer` (plain
+    `j`/`k` inside `nvim_win_call` — readable, and identical in effect to
+    `"\14"`/`"\16"`; the helper takes whatever `normal!` keys it is
+    given, which is why `<C-d>`/`<C-u>` pass `"\4"`/`"\21"`). Single-line
+    cursor motion inside the view window is the smaller-step sibling of
+    the existing half-page scroll, and because it moves that window's own
+    cursor it composes correctly with the logs view's `<CR>` download
+    (which reads `nvim_win_get_cursor(session.view_window)`).
+    **Accepted tradeoff, explicitly:** `<Up>`/`<Down>` no longer change
+    the selected org, so **org switching is `j`/`k` only**. This is what
+    the user asked for; do **not** invent a third binding to preserve
+    arrow-key org switching.
+43. `lua/sf/ui/org_dashboard.lua`: leave `h`/`l` (cycle tabs), `j`/`k`
+    (plain cursor motion in the list buffer → org switch via the existing
+    `CursorMoved` autocmd), and `<Left>`/`<Right>` (cycle tabs) exactly
+    as they are. `j`/`k` are deliberately **not** bound — they must stay
+    native motion so the autocmd keeps firing.
+    Test (`tests/test_org_dashboard.lua`), a fake tab view whose render
+    returns more lines than the pane is tall, then one case per claim:
+    (a) `<Down>` moves `nvim_win_get_cursor(view_window)[1]` down by one
+    while `nvim_get_current_win()` stays the list window **and** the list
+    cursor row is unchanged; (b) `<Up>` moves it back; (c) `<C-d>`
+    increases `getwininfo(view_window)[1].topline` and `<C-u>` returns it
+    toward 1; (d) `j` still changes the selected org (rendered content
+    changes) — this is the regression guard for Step 43's "do not bind
+    j/k" rule; (e) `<Right>`/`<Left>` still cycle tabs and wrap. This
+    closes the Phase 6 Step 23 coverage gap in the same pass.
+
+### Phase 13 — Derived blue theme, dimming, and consistent emphasis
+
+44. `lua/sf/ui/highlights.lua`: add two small file-local pure helpers,
+    `local function shade(hex, factor)` (factor `< 1` darkens toward
+    black, `> 1` lightens toward white, per-channel, clamped 0-255,
+    returns `#RRGGBB`) and `local function mix(hex_a, hex_b, weight)`.
+    Derive every chrome group from the single existing `ui.accent`
+    instead of hardcoding literals — including `SfTitle`'s current
+    hardcoded `fg = "#101418"`, which becomes `shade(accent, 0.08)` so a
+    user changing `accent` to a subtler blue keeps readable contrast
+    automatically. Keep every group `default = true`.
+    Test (`tests/test_highlights.lua`, new file following the existing
+    `tests/test_*.lua` child-Neovim pattern): `shade`/`mix` are exported
+    for test (e.g. `highlights._shade`) and asserted on known inputs
+    (identity at factor 1, clamping at extremes, `#RRGGBB` shape); then
+    `setup()` with a custom `vim.g.sf.ui.accent` and assert via
+    `nvim_get_hl` that `SfBorder`/`SfTitle`/`SfTableHeader`/`SfDim` all
+    moved with it (the actual "single variable" claim).
+45. `lua/sf/ui/highlights.lua`: add `SfDim` (`fg = mix(accent, bg-ish, ...)`
+    or simply a desaturated/darkened accent — visibly recessive but still
+    legible, **not** `link = "Comment"`, so it stays inside the derived
+    palette) and `SfTableHeader` (`{ fg = shade(accent, 1.25), bold = true,
+    underline = true }` — bold + tinted + underlined, **no background
+    fill**). `SfTitle` keeps its filled-pill look and is reserved for the
+    float title and the winbar's active tab only.
+46. `lua/sf/ui/highlights.lua`: resolve the prod/sandbox/scratch colour
+    tradeoff **explicitly**. Today `SfStatusProd` is `accent`,
+    `SfStatusSandbox` is hardcoded `"white"`, `SfStatusScratch` is
+    hardcoded `"cyan"` — three unrelated named colours that do not belong
+    to a "subtle blue" theme, but whose at-a-glance distinguishability in
+    the org list is genuinely valuable and must not be lost.
+    **Resolution: keep three clearly distinct steps, but derive all three
+    from `accent` so they share one hue family** — e.g.
+    `SfStatusProd = { fg = accent, bold = true }` (the most saturated —
+    production is the one you must not misread),
+    `SfStatusSandbox = { fg = shade(accent, 1.45) }` (a light tint),
+    `SfStatusScratch = { fg = shade(accent, 0.72) }` (a darker shade).
+    Distinguishable by lightness rather than by unrelated hue, and a
+    single `accent` change still re-themes all three coherently. Do
+    **not** collapse them to one colour.
+    Test: in `tests/test_highlights.lua`, assert the three resolve to
+    three *different* `fg` values (the at-a-glance guarantee, expressed as
+    a test so a future "simplification" cannot silently flatten them).
+47. `lua/sf/ui/org_view.lua`: extend `render_columns` rows with an
+    **optional** `cell_highlights` field — a sparse
+    `{ [column_index] = "SfDim", ... }` map applied per cell at that
+    cell's computed byte range, alongside (not instead of) the existing
+    whole-line `highlight`. Every existing caller is untouched by
+    omitting the field. Justified by two real consumers in Step 48
+    (the Status instance-info label column, and the logs view's
+    lower-value columns) — this is the only mechanism that satisfies
+    "bold the important, dim the unimportant" *within* a row, which a
+    whole-line highlight cannot express. Reuse the existing
+    `safe_cell_text` width math so the ranges line up with the padding.
+    Test (`tests/test_org_view.lua`): a row with
+    `cell_highlights = { [2] = "SfDim" }` produces a segment whose
+    `col_start`/`col_end` exactly bracket column 2's padded range and
+    leaves columns 1 and 3 unhighlighted; a row with both `highlight` and
+    `cell_highlights` emits both; omitting the field changes nothing
+    (byte-identical to today's output for the existing fixtures).
+48. `lua/sf/ui/dashboard_views.lua`: apply the emphasis rules, case by
+    case — this is item 3's "bold important / dim unimportant" made
+    concrete, and every one of these call sites carries **no** highlight
+    on data rows today:
+    - `append_table_section`: header row group changes `SfTitle` →
+      `SfTableHeader` (kills the four solid blue bars).
+    - Limits/Packages renders: same header group change. Limits keeps its
+      existing `>= 80%` → `SfWarn` row rule.
+    - Status instance-info rows: `cell_highlights = { [1] = "SfDim" }` so
+      the label column recedes and the value reads first.
+    - Products: an inactive product row gets `highlight = "SfWarn"`;
+      active rows get no row highlight, with the redundant `"Available"`
+      cell dimmed via `cell_highlights`.
+    - Maintenances: a row whose `planned_end` is already in the past gets
+      `highlight = "SfDim"` (needs a small `is_past(iso_datetime)` local
+      next to `format_status_date`, comparing against `os.time()` —
+      parse with the same pattern `format_status_date` already uses).
+    - Messages: `status == "Resolved"` → `highlight = "SfDim"`;
+      `"Active"` → left at normal weight.
+    Test (`tests/test_dashboard_views.lua`): header lines carry
+    `SfTableHeader` and **not** `SfTitle`; an inactive product row carries
+    `SfWarn`; a `Resolved` message row carries `SfDim` and an `Active` one
+    does not; a maintenance with a past `planned_end` carries `SfDim` and
+    a future one does not; the instance-info label column carries `SfDim`
+    at column 1's range only.
+
+### Phase 14 — Incidents: real dates, tabulated, correctly emphasised
+
+49. `lua/sf/sub/org_status.lua`: extend the incident mapping in
+    `parse_instance_status`. Add a file-local
+    `local function first_impact(incident)` returning
+    `IncidentImpacts[1]` when it is a table, and widen each incident to
+    `{ id, status, type, severity, message, impact_start, impact_end, created_at }`:
+    - `impact_start` / `impact_end` from the first impact's
+      `startTime` / `endTime` via the existing `as_string`.
+    - `type` prefers the **impact-level** `type`
+      (`featurePerfDegradation`) over the incident-level one, because the
+      latter is `"Degradation"` on every real record (see findings);
+      fall back to incident `type`.
+    - `created_at` from `incident.createdAt` — parsed and carried but not
+      rendered in Step 50, so "when was this reported" is one field away
+      without another API round trip.
+    - Reuse the existing `incident_severity` helper (already reads the
+      first impact) by having it call `first_impact` so there is one
+      definition of "the first impact".
+    Update the `@return` doc block to the widened incident shape.
+    Test (`tests/test_org_status.lua`), driven by the real shape already
+    captured in that file's fixtures: `impact_start`/`impact_end`/
+    `created_at` land from a realistic record; `type` resolves to the
+    impact-level value when present and falls back to the incident-level
+    one when `IncidentImpacts` is empty; an incident with **no** impacts
+    yields `nil` for both times and does not error (the existing
+    "unrecognized id shape" and "no impacts" cases must keep passing).
+50. `lua/sf/ui/dashboard_views.lua`: replace the bullet-list incident
+    loop in `render_status_section` with an `append_table_section` call
+    matching Maintenances/Messages — columns
+    `Incident | Status | Type | Severity | Start | End`, where `Incident`
+    is `truncate(incident.message or incident.type or incident.id or "(no details)", 40)`
+    (keeping today's fallback chain), and `Start`/`End` go through the
+    existing `format_status_date`. The `"No incidents reported."` empty
+    message is preserved as the section's `empty_message`.
+    **Row emphasis, consistent with Step 48 and fixing the "everything is
+    a warning" bug from the findings:** `status == "Resolved"` →
+    `highlight = "SfDim"`; an unresolved incident → `SfWarn`, or
+    `SfError` when `severity` is not `"minor"`. A healthy org whose six
+    incidents are all resolved must render six *dim* rows, not six yellow
+    ones.
+    Test (`tests/test_dashboard_views.lua`): the incidents section is a
+    table with the six expected headers, not a `"  - "` bullet list;
+    impact dates appear in compacted `YYYY-MM-DD HH:MM` form; a
+    `Resolved` incident row carries `SfDim`; an unresolved `minor` one
+    carries `SfWarn`; an unresolved non-minor one carries `SfError`; the
+    empty case still prints `"No incidents reported."`.
+
+### Phase 15 — Green
+
+51. `make test` green, `stylua` per `.stylua.toml`. Re-run the Step 12
+    name-derivation audit: after Phase 12 the descriptor-less literal
+    dashboard keys are `q`, `<Esc>`, `r`, `f`, `<CR>`, `h`, `l`,
+    `<Left>`, `<Right>`, `<Up>`, `<Down>`, `<C-d>`, `<C-u>`. Confirm no
+    new short identifiers were introduced (AGENTS.md), that
+    `dashboard_views.lua` is still a plain array with no new abstraction,
+    and that `SfTitle` is no longer referenced by any table-header call
+    site.
+
+---
+
+## Batching for workers (round 3)
+
+**Three workers, strictly sequential.** Phase 10 gates Phase 11 on
+behaviour, and Phases 10/13/14 all write `lua/sf/ui/org_view.lua` or
+`lua/sf/ui/dashboard_views.lua`, so no two waves can run concurrently in
+one worktree.
+
+| Wave | Worker | Phases | Files it writes |
+|---|---|---|---|
+| 1 | Worker F | Phase 10 | `lua/sf/sub/rest_api.lua`, `lua/sf/ui/org_view.lua`, `lua/sf/ui/org_dashboard.lua` (one line in the `r` keymap), `tests/test_rest_api.lua`, `tests/test_org_view.lua`, `tests/test_org_dashboard.lua` |
+| 2 (after F) | Worker G | Phases 11 + 12 | `lua/sf/ui/org_dashboard.lua`, `tests/test_org_dashboard.lua` |
+| 3 (after G) | Worker H | Phases 13 + 14 + 15 | `lua/sf/ui/highlights.lua`, `lua/sf/ui/org_view.lua`, `lua/sf/ui/dashboard_views.lua`, `lua/sf/sub/org_status.lua`, `tests/test_highlights.lua` (new), `tests/test_org_view.lua`, `tests/test_dashboard_views.lua`, `tests/test_org_status.lua` |
+
+Rationale:
+
+- **Phase 10 must be its own first wave.** It is the prerequisite that
+  makes prefetching safe (5 identical `sf org display` spawns → 1). If
+  Worker G shipped prefetching first, the dashboard would spawn 12-18
+  concurrent Node processes and the user's complaint would get *worse*.
+  It is also the only wave that touches `rest_api.lua`, so it is cleanly
+  separable.
+- **Phases 11 and 12 are one change to one file.** Both rewrite the
+  keymap/fetch block of `org_dashboard.lua`; Step 41 refactors the very
+  `<C-d>`/`<C-u>` bodies that Step 42 extends, and Step 39 rewrites the
+  `on_cursor_move` that Step 43's test asserts against. Splitting them
+  guarantees a conflict in one file and a second pass over the same
+  tests.
+- **Phases 13 and 14 stay together.** Step 50's incident row emphasis is
+  defined in terms of Step 48's `SfDim`/`SfWarn`/`SfError` rules and uses
+  Step 45's new groups; Step 50 also calls `append_table_section`, whose
+  header group Step 48 changes. Shipping 14 without 13 means incidents
+  reference a highlight group that does not exist yet.
+- **Worker F and Worker H both touch `org_view.lua`** (F rewrites
+  `fetch_org_display`, H extends `render_columns`) — different functions,
+  but the same file, so they must not run concurrently.
+- **Do not split Phase 13 by file.** `highlights.lua` defines the groups,
+  `render_columns` gains the per-cell mechanism, and
+  `dashboard_views.lua` consumes both; a worker that lands only one of
+  the three ships a dashboard referencing undefined highlight groups.

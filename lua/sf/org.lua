@@ -91,10 +91,13 @@ function Org.list_org_logs(alias, callback)
       :addParams("--json")
       :set_org(alias)
       :buildAsTable()
-  util.system_call(cmd_tbl, nil, "Failed to list logs from org", function(obj)
+  -- Silent: the dashboard already shows its own inline spinner/"Loading..."
+  -- state while this is in flight (org_dashboard.lua's paint_view), so a
+  -- second top-right progress box here is redundant.
+  util.silent_system_call(cmd_tbl, nil, "Failed to list logs from org", function(obj)
     local logs, err = helpers.parse_log_list(obj.stdout)
     callback(logs, err)
-  end, "Querying logs...")
+  end)
 end
 
 --- Pick a log from the org's log list (fzf-lua) and download it into `dir`.
@@ -156,7 +159,11 @@ helpers.parse_log_list = function(stdout_lines)
     stdout_str = table.concat(stdout_lines, "")
   end
 
-  local ok, parsed = pcall(vim.json.decode, stdout_str, {})
+  -- luanil = { object = true }: decode JSON null as Lua nil, not the
+  -- truthy vim.NIL sentinel -- see rest_api.lua's cli_json_call for the
+  -- full rationale (a null ApexLog field, e.g. Operation, would otherwise
+  -- silently defeat every `field or default` below and downstream).
+  local ok, parsed = pcall(vim.json.decode, stdout_str, { luanil = { object = true } })
   if not ok then
     return {}, "Failed to parse log JSON!"
   end
@@ -179,6 +186,7 @@ helpers.parse_log_list = function(stdout_lines)
       start_time = log_entry["StartTime"] or "",
       size = log_entry["LogLength"] or 0,
       status = log_entry["Status"] or "",
+      operation = log_entry["Operation"] or "",
       raw = log_entry,
     }
     table.insert(logs, record)
@@ -259,7 +267,9 @@ helpers.orgs = {} -- array of { alias, username, is_scratch, is_sandbox, is_prod
 helpers.open_org = function(alias)
   local cmd = cmd_builder:new():cmd("org"):act("open"):set_org(alias):build()
   local err_msg = "Command failed: " .. cmd
-  util.job_call(cmd, nil, err_msg)
+  -- Silent: dashboard-triggered (the "Open" action), which doesn't need a
+  -- "job starts" notification on top of its own UI -- errors still notify.
+  util.silent_job_call(cmd, nil, err_msg)
 end
 
 helpers.clean_org_cache = function()
@@ -391,8 +401,12 @@ helpers.store_orgs = function(data)
     s = s .. v
   end
 
-  local org_data = vim.json.decode(s, {}).result.nonScratchOrgs
-  local scratch_org_data = vim.json.decode(s, {}).result.scratchOrgs
+  -- luanil = { object = true }: decode JSON null as Lua nil, not the
+  -- truthy vim.NIL sentinel -- see rest_api.lua's cli_json_call for the
+  -- full rationale (applies equally to a null `alias`/`expirationDate` here).
+  local decode_opts = { luanil = { object = true } }
+  local org_data = vim.json.decode(s, decode_opts).result.nonScratchOrgs
+  local scratch_org_data = vim.json.decode(s, decode_opts).result.scratchOrgs
 
   for i = 1, #scratch_org_data do
     org_data[#org_data + 1] = scratch_org_data[i]

@@ -8,6 +8,7 @@
 -- single session.
 
 local cmd_builder = require("sf.sub.cmd_builder")
+local rest_api = require("sf.sub.rest_api")
 local Icons = require("sf.ui.icons")
 
 local org_view = {}
@@ -234,22 +235,112 @@ function org_view.paint(buf, lines, line_hls)
   end
 end
 
+--- Render tabular data with aligned columns.
+--- Coerce a cell to a safe string for width/length math. Defensive against
+--- `vim.NIL` (Neovim's truthy userdata sentinel for a decoded JSON `null`,
+--- which crashed `#cell` here on an unmanaged package's null
+--- `NamespacePrefix` -- see rest_api.lua's cli_json_call for the fuller
+--- story) and any other non-string a caller passes through, e.g. a number.
+---@param cell any
+---@return string
+local function safe_cell_text(cell)
+  if type(cell) == "string" then
+    return cell
+  elseif cell == nil or cell == vim.NIL then
+    return ""
+  end
+  return tostring(cell)
+end
+
+--- Computes column widths as the maximum cell width in each column,
+--- joins cells with a two-space gap, and applies whole-line highlights.
+---@param rows table[] array of { cells = {"text", ...}, highlight = "SfWarn"|nil }
+---@return string[] lines, table[] per-line highlight segments
+function org_view.render_columns(rows)
+  if #rows == 0 then
+    return {}, {}
+  end
+
+  -- Compute column widths
+  local col_widths = {}
+  for _, row in ipairs(rows) do
+    if row.cells then
+      for col_idx, cell in ipairs(row.cells) do
+        col_widths[col_idx] = math.max(col_widths[col_idx] or 0, #safe_cell_text(cell))
+      end
+    end
+  end
+
+  -- ponytail: width is byte length (#cell), same ASCII assumption as org_view.pad;
+  -- upgrade path is vim.fn.strdisplaywidth if non-ASCII aliases ever misalign.
+  local lines = {}
+  local line_hls = {}
+  local gap = "  "
+
+  for _, row in ipairs(rows) do
+    if row.cells then
+      local padded_cells = {}
+      local last_col_idx = #row.cells
+      local col_byte_ranges = {} -- track [col_idx] = { byte_start, byte_end }
+      local byte_offset = 0
+
+      for col_idx, cell in ipairs(row.cells) do
+        -- Don't pad the last column -- matches render_list_lines'
+        -- convention (its trailing expiry_part is never padded) and
+        -- avoids meaningless trailing whitespace on every row.
+        local cell_text = safe_cell_text(cell)
+        local cell_byte_len = #cell_text
+        col_byte_ranges[col_idx] = { byte_offset, byte_offset + cell_byte_len }
+
+        if col_idx == last_col_idx then
+          table.insert(padded_cells, cell_text)
+          byte_offset = byte_offset + cell_byte_len
+        else
+          local width = col_widths[col_idx] or 0
+          local padded = org_view.pad(cell_text, width)
+          table.insert(padded_cells, padded)
+          byte_offset = byte_offset + #padded
+        end
+
+        -- Add gap between columns (except after the last one)
+        if col_idx < last_col_idx then
+          byte_offset = byte_offset + #gap
+        end
+      end
+
+      local line = table.concat(padded_cells, gap)
+      table.insert(lines, line)
+
+      -- Apply whole-line highlight if specified, and per-cell highlights
+      local hls = {}
+      if row.highlight then
+        table.insert(hls, { group = row.highlight, col_start = 0, col_end = #line })
+      end
+      if row.cell_highlights then
+        for col_idx, highlight_group in pairs(row.cell_highlights) do
+          local range = col_byte_ranges[col_idx]
+          if range then
+            table.insert(hls, { group = highlight_group, col_start = range[1], col_end = range[2] })
+          end
+        end
+      end
+      table.insert(line_hls, hls)
+    end
+  end
+
+  return lines, line_hls
+end
+
 ---@param record table
 ---@param on_result fun(detail: table|nil, err: string|nil)
 function org_view.fetch_org_display(record, on_result)
-  local cmd = cmd_builder:new():cmd("org"):act("display"):addParams("--json"):set_org(record.alias):buildAsTable()
-
-  vim.system(cmd, { text = true }, function(obj)
-    vim.schedule(function()
-      if obj.code ~= 0 then
-        return on_result(nil, "exit code " .. obj.code)
-      end
-      local ok, parsed = pcall(vim.json.decode, obj.stdout or "")
-      if not ok or not parsed or not parsed.result then
-        return on_result(nil, "could not parse `sf org display` output")
-      end
-      on_result(parsed.result, nil)
-    end)
+  -- Fetch via shared, cached, coalesced rest_api.get_org_display:
+  -- deduplicates identical spawns across all dashboard views
+  rest_api.get_org_display(record.alias, function(result, err)
+    if err then
+      return on_result(nil, "could not parse `sf org display` output")
+    end
+    on_result(result, nil)
   end)
 end
 

@@ -191,4 +191,152 @@ test_set["render_list_lines: alias column aligned across rows"] = function()
   eq(lines[1]:find("long_username_here", 1, true), lines[2]:find("u", 1, true))
 end
 
+test_set["render_columns: ragged input aligns to widest cell per column"] = function()
+  child.lua([[
+    rows = {
+      { cells = { "a", "bb", "ccc" }, highlight = nil },
+      { cells = { "longer", "x", "yy" }, highlight = nil },
+    }
+    lines, hls = org_view.render_columns(rows)
+  ]])
+  local lines = child.lua_get([[lines]])
+  eq(#lines, 2)
+  -- Column 1 is padded to "longer" (6 chars) so column 2 starts at the
+  -- same byte offset on both rows; column 2 is padded to "bb" (2 chars)
+  -- so column 3 starts at the same offset on both rows too. The last
+  -- column is never padded (matches render_list_lines' convention of
+  -- never padding its trailing segment), so assert alignment via offsets
+  -- rather than a hand-counted literal, the same idiom
+  -- "render_list_lines: alias column aligned across rows" already uses.
+  eq(lines[1]:find("bb", 1, true), lines[2]:find("x", 1, true))
+  eq(lines[1]:find("ccc", 1, true), lines[2]:find("yy", 1, true))
+end
+
+test_set["render_columns: highlight produces whole-line segment"] = function()
+  child.lua([[
+    rows = {
+      { cells = { "text" }, highlight = "SfWarn" },
+    }
+    lines, hls = org_view.render_columns(rows)
+  ]])
+  local hls = child.lua_get([[hls]])
+  eq(#hls, 1)
+  eq(#hls[1], 1)
+  eq(hls[1][1].group, "SfWarn")
+  eq(hls[1][1].col_start, 0)
+  eq(hls[1][1].col_end, 4)
+end
+
+test_set["render_columns: nil highlight produces empty segment"] = function()
+  child.lua([[
+    rows = {
+      { cells = { "text" }, highlight = nil },
+    }
+    lines, hls = org_view.render_columns(rows)
+  ]])
+  local hls = child.lua_get([[hls]])
+  eq(#hls, 1)
+  eq(#hls[1], 0)
+end
+
+test_set["render_columns: empty input returns empty tables"] = function()
+  child.lua([[
+    lines, hls = org_view.render_columns({})
+  ]])
+  local lines = child.lua_get([[lines]])
+  local hls = child.lua_get([[hls]])
+  eq(#lines, 0)
+  eq(#hls, 0)
+end
+
+-- Regression: an unmanaged package's null NamespacePrefix decodes to
+-- vim.NIL (a truthy userdata sentinel, not Lua nil -- see rest_api.lua's
+-- cli_json_call), which used to crash here with "attempt to get length of
+-- a userdata value" on `#cell`. Also cover a plain non-string cell (e.g. a
+-- number slipping through unformatted) since both are the same class of
+-- "cell isn't a string" caller mistake.
+test_set["render_columns: vim.NIL and non-string cells do not error"] = function()
+  child.lua([[
+    rows = {
+      { cells = { "Pkg", vim.NIL, 3 } },
+    }
+    lines, hls = org_view.render_columns(rows)
+  ]])
+  local lines = child.lua_get([[lines]])
+  eq(#lines, 1)
+  expect.match(lines[1], "Pkg")
+  expect.match(lines[1], "3")
+end
+
+test_set["fetch_org_display: calls rest_api.get_org_display and forwards alias"] = function()
+  child.lua([[
+    local api = require("sf.sub.rest_api")
+    local captured_alias
+    local original_get_org_display = api.get_org_display
+    api.get_org_display = function(alias, cb)
+      captured_alias = alias
+      cb({ accessToken = "tok", instanceUrl = "https://x", apiVersion = "60.0", username = "u@x.com" }, nil)
+    end
+    
+    _G._result = nil
+    _G._err = nil
+    org_view.fetch_org_display({ alias = "test_org" }, function(result, err)
+      _G._result = result
+      _G._err = err
+    end)
+    
+    api.get_org_display = original_get_org_display
+    _G._captured_alias = captured_alias
+  ]])
+  
+  eq(child.lua_get([[_G._captured_alias]]), "test_org")
+  local result = child.lua_get([[_G._result]])
+  eq(result.username, "u@x.com")
+end
+
+test_set["fetch_org_display: surfaces error from get_org_display"] = function()
+  child.lua([[
+    local api = require("sf.sub.rest_api")
+    local original_get_org_display = api.get_org_display
+    api.get_org_display = function(alias, cb)
+      cb(nil, "some error")
+    end
+    
+    _G._result = nil
+    _G._err = nil
+    org_view.fetch_org_display({ alias = "test_org" }, function(result, err)
+      _G._result = result
+      _G._err = err
+    end)
+    
+    api.get_org_display = original_get_org_display
+  ]])
+  
+  eq(child.lua_get([[_G._result == nil]]), true)
+  eq(child.lua_get([[_G._err == "could not parse `sf org display` output"]]), true)
+end
+
+test_set["fetch_org_display: does not call vim.system directly"] = function()
+  child.lua([[
+    local api = require("sf.sub.rest_api")
+    local vim_system_called = false
+    local original_vim_system = vim.system
+    vim.system = function()
+      vim_system_called = true
+    end
+    local original_get_org_display = api.get_org_display
+    api.get_org_display = function(alias, cb)
+      cb({ accessToken = "tok", instanceUrl = "https://x", apiVersion = "60.0", username = "u@x.com" }, nil)
+    end
+    
+    org_view.fetch_org_display({ alias = "test_org" }, function() end)
+    
+    api.get_org_display = original_get_org_display
+    vim.system = original_vim_system
+    _G._vim_system_called = vim_system_called
+  ]])
+  
+  eq(child.lua_get([[_G._vim_system_called]]), false)
+end
+
 return test_set
