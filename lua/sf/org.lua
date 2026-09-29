@@ -25,11 +25,9 @@ function Org.diff_in_org()
 end
 
 function Org.open_dashboard()
-  if vim.tbl_isempty(helpers.orgs) then
-    return util.show_err("No orgs available. Run :SF org list first.")
-  end
-
-  require("sf.ui.org_dashboard").open(helpers.orgs, { prompt = "Org Dashboard" })
+  helpers.with_orgs(function()
+    require("sf.ui.org_dashboard").open(helpers.orgs, { prompt = "Org Dashboard" })
+  end)
 end
 
 function Org.open()
@@ -343,48 +341,66 @@ helpers.format_org_item = function(record)
   return marker .. alias .. " (" .. username .. ")"
 end
 
-helpers.set_target_org = function()
-  if vim.tbl_isempty(helpers.orgs) then
-    return util.show_err("No orgs available. Run :SF org list first.")
+--- Run `fn` once org info is available. If the cache is still empty --
+--- either `fetch_org_list_at_nvim_start` is off, or this was called before
+--- that startup fetch finished -- fetch it first (with a status notice)
+--- instead of telling the user to run a command by hand. Safe to call from
+--- several places at once: overlapping fetches already resolve to
+--- last-writer-wins in `helpers.store_orgs`, so no extra in-flight guard
+--- is needed here.
+---@param fn fun()
+helpers.with_orgs = function(fn)
+  if not vim.tbl_isempty(helpers.orgs) then
+    return fn()
   end
 
-  vim.ui.select(helpers.orgs, {
-    prompt = "Local target_org:",
-    format_item = helpers.format_org_item,
-  }, function(record)
-    if record == nil then
-      return
+  util.show("Fetching org list...")
+  helpers.fetch_org_list(function()
+    if vim.tbl_isempty(helpers.orgs) then
+      return util.show_err("No orgs found. Run `sf org login web` to authenticate one.")
     end
-    local org = record.alias
-    local ok, err = helpers.write_target_org_to_config(org, false)
-    if not ok then
-      return util.show_err(org .. " - set target_org failed! " .. err)
-    end
-    helpers.mark_default(org)
-    util.set_target_org(org, record)
+    fn()
+  end)
+end
+
+helpers.set_target_org = function()
+  helpers.with_orgs(function()
+    vim.ui.select(helpers.orgs, {
+      prompt = "Local target_org:",
+      format_item = helpers.format_org_item,
+    }, function(record)
+      if record == nil then
+        return
+      end
+      local org = record.alias
+      local ok, err = helpers.write_target_org_to_config(org, false)
+      if not ok then
+        return util.show_err(org .. " - set target_org failed! " .. err)
+      end
+      helpers.mark_default(org)
+      util.set_target_org(org, record)
+    end)
   end)
 end
 
 helpers.set_global_target_org = function()
-  if vim.tbl_isempty(helpers.orgs) then
-    return util.show_err("No orgs available. Run :SF org list first.")
-  end
-
-  vim.ui.select(helpers.orgs, {
-    prompt = "Global target_org:",
-    format_item = helpers.format_org_item,
-  }, function(record)
-    if record == nil then
-      return
-    end
-    local org = record.alias
-    local ok, err = helpers.write_target_org_to_config(org, true)
-    if not ok then
-      return util.show_err(string.format("Global set target_org [%s] failed! %s", org, err))
-    end
-    helpers.mark_default(org)
-    util.set_target_org(org, record)
-    vim.notify("Global target_org set: " .. org, vim.log.levels.INFO)
+  helpers.with_orgs(function()
+    vim.ui.select(helpers.orgs, {
+      prompt = "Global target_org:",
+      format_item = helpers.format_org_item,
+    }, function(record)
+      if record == nil then
+        return
+      end
+      local org = record.alias
+      local ok, err = helpers.write_target_org_to_config(org, true)
+      if not ok then
+        return util.show_err(string.format("Global set target_org [%s] failed! %s", org, err))
+      end
+      helpers.mark_default(org)
+      util.set_target_org(org, record)
+      vim.notify("Global target_org set: " .. org, vim.log.levels.INFO)
+    end)
   end)
 end
 
@@ -514,18 +530,16 @@ helpers.diff_in_target_org = function()
 end
 
 helpers.diff_in_org = function()
-  if vim.tbl_isempty(helpers.orgs) then
-    return util.show_err("No orgs available. Run :SF org list first.")
-  end
-
-  vim.ui.select(helpers.orgs, {
-    prompt = "Diff in org:",
-    format_item = helpers.format_org_item,
-  }, function(record)
-    if record == nil then
-      return
-    end
-    helpers.diff_in(record.alias)
+  helpers.with_orgs(function()
+    vim.ui.select(helpers.orgs, {
+      prompt = "Diff in org:",
+      format_item = helpers.format_org_item,
+    }, function(record)
+      if record == nil then
+        return
+      end
+      helpers.diff_in(record.alias)
+    end)
   end)
 end
 

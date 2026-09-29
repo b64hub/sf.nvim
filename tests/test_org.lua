@@ -342,9 +342,36 @@ end
 
 T["open_dashboard"] = new_set()
 
-T["open_dashboard"]["does not open dashboard when org list is empty"] = function()
+T["open_dashboard"]["fetches the org list first, then opens once orgs are populated"] = function()
+  child.lua([[
+    H = M.__test
+    H.orgs = {}
+    H.fetch_org_list = function(on_done)
+      H.orgs = { { alias = "one" } }
+      on_done()
+    end
+
+    local dashboard_module = require("sf.ui.org_dashboard")
+    local original_open = dashboard_module.open
+    _dashboard_open_called = false
+    dashboard_module.open = function()
+      _dashboard_open_called = true
+    end
+
+    M.open_dashboard()
+    dashboard_module.open = original_open
+  ]])
+
+  eq(child.lua_get([[_dashboard_open_called]]), true)
+end
+
+T["open_dashboard"]["does not open dashboard when the fetch still yields no orgs"] = function()
   child.lua([[
     util = require("sf.util")
+    H = M.__test
+    H.orgs = {}
+    H.fetch_org_list = function(on_done) on_done() end
+
     _show_err_message = nil
     util.show_err = function(msg)
       _show_err_message = msg
@@ -361,7 +388,7 @@ T["open_dashboard"]["does not open dashboard when org list is empty"] = function
     dashboard_module.open = original_open
   ]])
 
-  eq(child.lua_get([[_show_err_message]]), "No orgs available. Run :SF org list first.")
+  eq(child.lua_get([[_show_err_message ~= nil]]), true)
   eq(child.lua_get([[_dashboard_open_called]]), false)
 end
 
@@ -412,14 +439,29 @@ T["set_target_org"] = new_set({
   },
 })
 
-T["set_target_org"]["does not open selector when org list is empty"] = function()
+T["set_target_org"]["does not open selector when the org list is (still) empty after fetching"] = function()
   child.lua([[
     H.orgs = {}
+    H.fetch_org_list = function(on_done) on_done() end
     _G.called = false
     vim.ui.select = function() _G.called = true end
     M.set_target_org()
   ]])
   eq(child.lua_get([[_G.called]]), false) -- vim.ui.select should not be called
+end
+
+T["set_target_org"]["fetches the org list first when empty, then opens the selector"] = function()
+  child.lua([[
+    H.orgs = {}
+    H.fetch_org_list = function(on_done)
+      H.orgs = { { alias = "one", username = "one@example.com" } }
+      on_done()
+    end
+    _G.called = false
+    vim.ui.select = function() _G.called = true end
+    M.set_target_org()
+  ]])
+  eq(child.lua_get([[_G.called]]), true)
 end
 
 T["set_target_org"]["calls vim.ui.select with formatted org items"] = function()
@@ -627,9 +669,10 @@ T["diff_in_org"] = new_set({
   },
 })
 
-T["diff_in_org"]["does not open selector when org list is empty"] = function()
+T["diff_in_org"]["does not open selector when the org list is (still) empty after fetching"] = function()
   child.lua([[
     H.orgs = {}
+    H.fetch_org_list = function(on_done) on_done() end
     _G.called = false
     vim.ui.select = function() _G.called = true end
     M.diff_in_org()
