@@ -56,65 +56,80 @@ T["fetch_org_list"]["on_done callback is invoked after fetch completes"] = funct
   eq(child.lua_get([[_G.callback_called]]), true)
 end
 
-T["fetch_org_list"]["overlapping fetches resolve to last-writer-wins (no duplicates)"] = function()
+T["fetch_org_list"]["overlapping calls coalesce onto one job and every waiter still fires"] = function()
   child.lua([[
     local util = require("sf.util")
     util.is_sf_cmd_installed = function() end
-    
-    -- Mock jobstart to defer completion via vim.defer_fn so fetches
-    -- can overlap. This simulates real network delay.
+
+    -- Mock jobstart to defer completion instead of firing inline, so the
+    -- two fetch_org_list calls below can genuinely overlap in flight.
     local pending_fetches = {}
     vim.fn.jobstart = function(cmd, opts)
-      -- Capture the opts; we'll fire the callback later
       table.insert(pending_fetches, opts)
-      return #pending_fetches  -- return mock job ID
+      return #pending_fetches -- mock job id
     end
-    
-    -- Helper to complete one pending fetch (in order)
-    local complete_fetch = function(index, org_count)
-      local opts = pending_fetches[index]
-      if opts then
-        local org_json = '"alias":"org' .. index .. '","username":"user' .. index .. '","isScratch":false,"isSandbox":false,"isDefaultUsername":false,"isDefaultDevHubUsername":false'
-        local orgs = {}
-        for i = 1, org_count do
-          table.insert(orgs, '{' .. org_json .. '}')
-        end
-        local payload = '{"result":{"nonScratchOrgs":[' .. table.concat(orgs, ',') .. '],"scratchOrgs":[]}}'
-        if opts.on_stdout then
-          opts.on_stdout(nil, { payload })
-        end
-        if opts.on_exit then
-          opts.on_exit()
-        end
-      end
-    end
-    
+
     _G.pending_fetches = pending_fetches
-    _G.complete_fetch = complete_fetch
     _G.Org_fetch_org_list = M.fetch_org_list
+    _G.done_count = 0
   ]])
-  
-  -- Start two fetches back-to-back
+
+  -- Start two fetches back-to-back, before either can complete.
   child.lua([[
-    _G.Org_fetch_org_list(function() end)  -- fetch 1
-    _G.Org_fetch_org_list(function() end)  -- fetch 2
+    _G.Org_fetch_org_list(function() _G.done_count = _G.done_count + 1 end) -- caller 1
+    _G.Org_fetch_org_list(function() _G.done_count = _G.done_count + 1 end) -- caller 2
   ]])
-  
-  -- Complete fetch 1 first (with 2 orgs)
+
+  -- Exactly one `sf org list` CLI process spawned for both callers.
+  eq(child.lua_get([[#_G.pending_fetches]]), 1)
+
+  -- Complete that one job.
   child.lua([[
-    _G.complete_fetch(1, 2)
+    local opts = _G.pending_fetches[1]
+    opts.on_stdout(nil, {
+      '{"result":{"nonScratchOrgs":[{"alias":"org1","username":"user1","isScratch":false,"isSandbox":false,"isDefaultUsername":false,"isDefaultDevHubUsername":false}],"scratchOrgs":[]}}',
+    })
+    opts.on_exit()
   ]])
-  
-  -- Verify we have exactly 2 orgs (not 4)
-  eq(child.lua_get([[#(M.__test.orgs)]]), 2)
-  
-  -- Complete fetch 2 (with 1 org)
-  child.lua([[
-    _G.complete_fetch(2, 1)
-  ]])
-  
-  -- Should now have 1 org, not 3 (last-writer-wins, not append-append)
+
+  -- Both waiters ran, and the org list reflects the one completed fetch.
+  eq(child.lua_get([[_G.done_count]]), 2)
   eq(child.lua_get([[#(M.__test.orgs)]]), 1)
+end
+
+T["fetch_org_list"]["a call after the in-flight job completes spawns a genuinely fresh fetch"] = function()
+  child.lua([[
+    local util = require("sf.util")
+    util.is_sf_cmd_installed = function() end
+
+    local call_count = 0
+    vim.fn.jobstart = function(cmd, opts)
+      call_count = call_count + 1
+      local org_json = '{"alias":"org' .. call_count .. '","username":"user' .. call_count .. '","isScratch":false,"isSandbox":false,"isDefaultUsername":false,"isDefaultDevHubUsername":false}'
+      opts.on_stdout(nil, { '{"result":{"nonScratchOrgs":[' .. org_json .. '],"scratchOrgs":[]}}' })
+      opts.on_exit()
+      return call_count
+    end
+
+    M.fetch_org_list(function() end)
+    M.fetch_org_list(function() end) -- nothing in flight anymore -- must spawn again, not reuse a stale result
+    _G.call_count = call_count
+  ]])
+
+  eq(child.lua_get([[_G.call_count]]), 2)
+end
+
+T["store_orgs"] = new_set({ hooks = { pre_case = mock_test } })
+
+T["store_orgs"]["upserts idempotently: calling it twice with the same payload does not duplicate rows"] = function()
+  child.lua([[
+    H = M.__test
+    H.orgs = {}
+    local payload = { '{"result":{"nonScratchOrgs":[{"alias":"org1","username":"user1","isScratch":false,"isSandbox":false,"isDefaultUsername":false,"isDefaultDevHubUsername":false}],"scratchOrgs":[]}}' }
+    H.store_orgs(payload)
+    H.store_orgs(payload)
+  ]])
+  eq(child.lua_get([[#H.orgs]]), 1)
 end
 --
 -- T['get()']['target_org empty then err'] = function()

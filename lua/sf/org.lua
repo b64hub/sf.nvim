@@ -1,5 +1,6 @@
 local util = require("sf.util")
 local cmd_builder = require("sf.sub.cmd_builder")
+local async_cache = require("sf.sub.async_cache")
 
 local helpers = {}
 local Org = {}
@@ -453,18 +454,33 @@ helpers.store_orgs = function(data)
   Org.refresh_target_org_from_disk()
 end
 
+-- Coalescing-only cache (ttl_seconds = 0, the default) for `sf org list`:
+-- mashing the lualine icon, or the dashboard's manual refresh key, before
+-- the first fetch lands now reuses that one in-flight CLI process instead
+-- of spawning one per click. Every call still gets a genuinely fresh fetch
+-- once nothing is in flight -- unlike get_org_display above, this never
+-- serves a stale completed result, so a manual refresh always reflects
+-- reality (e.g. an org added via `sf org login` since the last fetch).
+local org_list_cache = async_cache.new({
+  fetch = function(_, cb)
+    vim.fn.jobstart("sf org list --json --skip-connection-status", {
+      stdout_buffered = true,
+      on_stdout = function(_, data)
+        helpers.store_orgs(data)
+      end,
+      on_exit = function()
+        cb(true, nil)
+      end,
+    })
+  end,
+})
+
 helpers.fetch_and_store_orgs = function(on_done)
-  vim.fn.jobstart("sf org list --json --skip-connection-status", {
-    stdout_buffered = true,
-    on_stdout = function(_, data)
-      helpers.store_orgs(data)
-    end,
-    on_exit = function()
-      if on_done then
-        on_done()
-      end
-    end,
-  })
+  org_list_cache:get("orgs", function()
+    if on_done then
+      on_done()
+    end
+  end)
 end
 
 helpers.fetch_org_list = function(on_done)
