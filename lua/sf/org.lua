@@ -1,5 +1,6 @@
 local util = require("sf.util")
 local cmd_builder = require("sf.sub.cmd_builder")
+local async_cache = require("sf.sub.async_cache")
 
 local helpers = {}
 local Org = {}
@@ -25,11 +26,9 @@ function Org.diff_in_org()
 end
 
 function Org.open_dashboard()
-  if vim.tbl_isempty(helpers.orgs) then
-    return util.show_err("No orgs available. Run :SF org list first.")
-  end
-
-  require("sf.ui.org_dashboard").open(helpers.orgs, { prompt = "Org Dashboard" })
+  helpers.with_orgs(function()
+    require("sf.ui.org_dashboard").open(helpers.orgs, { prompt = "Org Dashboard" })
+  end)
 end
 
 function Org.open()
@@ -343,48 +342,66 @@ helpers.format_org_item = function(record)
   return marker .. alias .. " (" .. username .. ")"
 end
 
-helpers.set_target_org = function()
-  if vim.tbl_isempty(helpers.orgs) then
-    return util.show_err("No orgs available. Run :SF org list first.")
+--- Run `fn` once org info is available. If the cache is still empty --
+--- either `fetch_org_list_at_nvim_start` is off, or this was called before
+--- that startup fetch finished -- fetch it first (with a status notice)
+--- instead of telling the user to run a command by hand. Safe to call from
+--- several places at once: overlapping fetches already resolve to
+--- last-writer-wins in `helpers.store_orgs`, so no extra in-flight guard
+--- is needed here.
+---@param fn fun()
+helpers.with_orgs = function(fn)
+  if not vim.tbl_isempty(helpers.orgs) then
+    return fn()
   end
 
-  vim.ui.select(helpers.orgs, {
-    prompt = "Local target_org:",
-    format_item = helpers.format_org_item,
-  }, function(record)
-    if record == nil then
-      return
+  util.show("Fetching org list...")
+  helpers.fetch_org_list(function()
+    if vim.tbl_isempty(helpers.orgs) then
+      return util.show_err("No orgs found. Run `sf org login web` to authenticate one.")
     end
-    local org = record.alias
-    local ok, err = helpers.write_target_org_to_config(org, false)
-    if not ok then
-      return util.show_err(org .. " - set target_org failed! " .. err)
-    end
-    helpers.mark_default(org)
-    util.set_target_org(org, record)
+    fn()
+  end)
+end
+
+helpers.set_target_org = function()
+  helpers.with_orgs(function()
+    vim.ui.select(helpers.orgs, {
+      prompt = "Local target_org:",
+      format_item = helpers.format_org_item,
+    }, function(record)
+      if record == nil then
+        return
+      end
+      local org = record.alias
+      local ok, err = helpers.write_target_org_to_config(org, false)
+      if not ok then
+        return util.show_err(org .. " - set target_org failed! " .. err)
+      end
+      helpers.mark_default(org)
+      util.set_target_org(org, record)
+    end)
   end)
 end
 
 helpers.set_global_target_org = function()
-  if vim.tbl_isempty(helpers.orgs) then
-    return util.show_err("No orgs available. Run :SF org list first.")
-  end
-
-  vim.ui.select(helpers.orgs, {
-    prompt = "Global target_org:",
-    format_item = helpers.format_org_item,
-  }, function(record)
-    if record == nil then
-      return
-    end
-    local org = record.alias
-    local ok, err = helpers.write_target_org_to_config(org, true)
-    if not ok then
-      return util.show_err(string.format("Global set target_org [%s] failed! %s", org, err))
-    end
-    helpers.mark_default(org)
-    util.set_target_org(org, record)
-    vim.notify("Global target_org set: " .. org, vim.log.levels.INFO)
+  helpers.with_orgs(function()
+    vim.ui.select(helpers.orgs, {
+      prompt = "Global target_org:",
+      format_item = helpers.format_org_item,
+    }, function(record)
+      if record == nil then
+        return
+      end
+      local org = record.alias
+      local ok, err = helpers.write_target_org_to_config(org, true)
+      if not ok then
+        return util.show_err(string.format("Global set target_org [%s] failed! %s", org, err))
+      end
+      helpers.mark_default(org)
+      util.set_target_org(org, record)
+      vim.notify("Global target_org set: " .. org, vim.log.levels.INFO)
+    end)
   end)
 end
 
@@ -437,18 +454,33 @@ helpers.store_orgs = function(data)
   Org.refresh_target_org_from_disk()
 end
 
+-- Coalescing-only cache (ttl_seconds = 0, the default) for `sf org list`:
+-- mashing the lualine icon, or the dashboard's manual refresh key, before
+-- the first fetch lands now reuses that one in-flight CLI process instead
+-- of spawning one per click. Every call still gets a genuinely fresh fetch
+-- once nothing is in flight -- unlike get_org_display above, this never
+-- serves a stale completed result, so a manual refresh always reflects
+-- reality (e.g. an org added via `sf org login` since the last fetch).
+local org_list_cache = async_cache.new({
+  fetch = function(_, cb)
+    vim.fn.jobstart("sf org list --json --skip-connection-status", {
+      stdout_buffered = true,
+      on_stdout = function(_, data)
+        helpers.store_orgs(data)
+      end,
+      on_exit = function()
+        cb(true, nil)
+      end,
+    })
+  end,
+})
+
 helpers.fetch_and_store_orgs = function(on_done)
-  vim.fn.jobstart("sf org list --json --skip-connection-status", {
-    stdout_buffered = true,
-    on_stdout = function(_, data)
-      helpers.store_orgs(data)
-    end,
-    on_exit = function()
-      if on_done then
-        on_done()
-      end
-    end,
-  })
+  org_list_cache:get("orgs", function()
+    if on_done then
+      on_done()
+    end
+  end)
 end
 
 helpers.fetch_org_list = function(on_done)
@@ -514,18 +546,16 @@ helpers.diff_in_target_org = function()
 end
 
 helpers.diff_in_org = function()
-  if vim.tbl_isempty(helpers.orgs) then
-    return util.show_err("No orgs available. Run :SF org list first.")
-  end
-
-  vim.ui.select(helpers.orgs, {
-    prompt = "Diff in org:",
-    format_item = helpers.format_org_item,
-  }, function(record)
-    if record == nil then
-      return
-    end
-    helpers.diff_in(record.alias)
+  helpers.with_orgs(function()
+    vim.ui.select(helpers.orgs, {
+      prompt = "Diff in org:",
+      format_item = helpers.format_org_item,
+    }, function(record)
+      if record == nil then
+        return
+      end
+      helpers.diff_in(record.alias)
+    end)
   end)
 end
 

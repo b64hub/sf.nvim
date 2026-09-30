@@ -11,6 +11,7 @@
 
 local util = require("sf.util")
 local cmd_builder = require("sf.sub.cmd_builder")
+local async_cache = require("sf.sub.async_cache")
 
 local rest_api = {}
 
@@ -37,19 +38,33 @@ local function cli_json_call(cmd, err_msg, cb)
   end)
 end
 
--- Module-local cache for `sf org display` results with TTL and in-flight coalescing.
--- Entry: { result = ..., err = ..., fetched_at = ..., waiters = { cb, ... } }
-local org_display_cache = {}
-local org_display_ttl_seconds = 300 -- 5 minutes; access tokens expire, so cache must not live forever
+-- TTL + in-flight-coalescing cache for `sf org display` results, keyed by
+-- alias: multiple simultaneous callers for the same alias spawn once and
+-- all receive the same result (or error), solving the "thundering herd"
+-- during prefetch.
+local org_display_cache = async_cache.new({
+  ttl_seconds = 300, -- access tokens expire, so cache must not live forever
+  fetch = function(alias, cb)
+    local cmd = cmd_builder:new():cmd("org"):act("display"):addParams("--json"):set_org(alias):buildAsTable()
+    cli_json_call(cmd, "Failed to get org display", function(decoded, err)
+      -- `cli_json_call` hands back the FULL `sf org display --json` response
+      -- ({ status = 0, result = {...} }), not the inner `result` object this
+      -- function documents/returns -- unwrap it here, once, so every caller
+      -- (get_session, and any future direct get_org_display caller) sees the
+      -- flat org-display fields the docstring promises.
+      local result = decoded and decoded.result
+      if decoded and not result and not err then
+        err = "Failed to get org display: missing result"
+      end
+      cb(result, err)
+    end)
+  end,
+})
 
 --- Clears the org_display cache entirely or for one alias.
 ---@param alias string|nil optional; when omitted, clears all cached entries
 function rest_api.invalidate_org_display(alias)
-  if alias then
-    org_display_cache[alias] = nil
-  else
-    org_display_cache = {}
-  end
+  org_display_cache:invalidate(alias)
 end
 
 --- Fetches the raw `sf org display` result with TTL caching and in-flight
@@ -60,60 +75,7 @@ end
 ---@param cb fun(result: table|nil, err: string|nil) receives the decoded
 ---  `result` table from `sf org display --json`, not the full response
 function rest_api.get_org_display(alias, cb)
-  local now = vim.uv.now()
-  local cache_entry = org_display_cache[alias]
-
-  -- Entry exists and is not expired
-  if cache_entry and (now - cache_entry.fetched_at) < org_display_ttl_seconds * 1000 then
-    if cache_entry.fetching then
-      -- In-flight: append to waiters; completion will call us back
-      table.insert(cache_entry.waiters, cb)
-      return
-    end
-    -- Complete (not fetching): if error, return it; if data, return it
-    return cb(cache_entry.result, cache_entry.err)
-  end
-
-  -- Cache miss or expired: spawn a new fetch
-  org_display_cache[alias] = {
-    result = nil,
-    err = nil,
-    fetched_at = now,
-    fetching = true,
-    waiters = { cb }, -- first waiter is the caller
-  }
-
-  local builder = cmd_builder:new():cmd("org"):act("display"):addParams("--json"):set_org(alias)
-  local cmd = builder:buildAsTable()
-
-  cli_json_call(cmd, "Failed to get org display", function(decoded, err)
-    -- `cli_json_call` hands back the FULL `sf org display --json` response
-    -- ({ status = 0, result = {...} }), not the inner `result` object this
-    -- function documents/returns -- unwrap it here, once, so every caller
-    -- (get_session, and any future direct get_org_display caller) sees the
-    -- flat org-display fields the docstring promises.
-    local result = decoded and decoded.result
-    if decoded and not result and not err then
-      err = "Failed to get org display: missing result"
-    end
-    local entry = org_display_cache[alias]
-    if entry then
-      entry.result = result
-      entry.err = err
-      entry.fetching = false
-      local waiters = entry.waiters
-      entry.waiters = {}
-      -- Do not cache errors: an errored lookup must be retried on the next call.
-      -- Drop the cache entry so a future call will spawn again.
-      if err then
-        org_display_cache[alias] = nil
-      end
-      -- Drain waiters
-      for _, waiter_cb in ipairs(waiters) do
-        waiter_cb(result, err)
-      end
-    end
-  end)
+  org_display_cache:get(alias, cb)
 end
 
 ---@return boolean

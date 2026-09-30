@@ -56,65 +56,80 @@ T["fetch_org_list"]["on_done callback is invoked after fetch completes"] = funct
   eq(child.lua_get([[_G.callback_called]]), true)
 end
 
-T["fetch_org_list"]["overlapping fetches resolve to last-writer-wins (no duplicates)"] = function()
+T["fetch_org_list"]["overlapping calls coalesce onto one job and every waiter still fires"] = function()
   child.lua([[
     local util = require("sf.util")
     util.is_sf_cmd_installed = function() end
-    
-    -- Mock jobstart to defer completion via vim.defer_fn so fetches
-    -- can overlap. This simulates real network delay.
+
+    -- Mock jobstart to defer completion instead of firing inline, so the
+    -- two fetch_org_list calls below can genuinely overlap in flight.
     local pending_fetches = {}
     vim.fn.jobstart = function(cmd, opts)
-      -- Capture the opts; we'll fire the callback later
       table.insert(pending_fetches, opts)
-      return #pending_fetches  -- return mock job ID
+      return #pending_fetches -- mock job id
     end
-    
-    -- Helper to complete one pending fetch (in order)
-    local complete_fetch = function(index, org_count)
-      local opts = pending_fetches[index]
-      if opts then
-        local org_json = '"alias":"org' .. index .. '","username":"user' .. index .. '","isScratch":false,"isSandbox":false,"isDefaultUsername":false,"isDefaultDevHubUsername":false'
-        local orgs = {}
-        for i = 1, org_count do
-          table.insert(orgs, '{' .. org_json .. '}')
-        end
-        local payload = '{"result":{"nonScratchOrgs":[' .. table.concat(orgs, ',') .. '],"scratchOrgs":[]}}'
-        if opts.on_stdout then
-          opts.on_stdout(nil, { payload })
-        end
-        if opts.on_exit then
-          opts.on_exit()
-        end
-      end
-    end
-    
+
     _G.pending_fetches = pending_fetches
-    _G.complete_fetch = complete_fetch
     _G.Org_fetch_org_list = M.fetch_org_list
+    _G.done_count = 0
   ]])
-  
-  -- Start two fetches back-to-back
+
+  -- Start two fetches back-to-back, before either can complete.
   child.lua([[
-    _G.Org_fetch_org_list(function() end)  -- fetch 1
-    _G.Org_fetch_org_list(function() end)  -- fetch 2
+    _G.Org_fetch_org_list(function() _G.done_count = _G.done_count + 1 end) -- caller 1
+    _G.Org_fetch_org_list(function() _G.done_count = _G.done_count + 1 end) -- caller 2
   ]])
-  
-  -- Complete fetch 1 first (with 2 orgs)
+
+  -- Exactly one `sf org list` CLI process spawned for both callers.
+  eq(child.lua_get([[#_G.pending_fetches]]), 1)
+
+  -- Complete that one job.
   child.lua([[
-    _G.complete_fetch(1, 2)
+    local opts = _G.pending_fetches[1]
+    opts.on_stdout(nil, {
+      '{"result":{"nonScratchOrgs":[{"alias":"org1","username":"user1","isScratch":false,"isSandbox":false,"isDefaultUsername":false,"isDefaultDevHubUsername":false}],"scratchOrgs":[]}}',
+    })
+    opts.on_exit()
   ]])
-  
-  -- Verify we have exactly 2 orgs (not 4)
-  eq(child.lua_get([[#(M.__test.orgs)]]), 2)
-  
-  -- Complete fetch 2 (with 1 org)
-  child.lua([[
-    _G.complete_fetch(2, 1)
-  ]])
-  
-  -- Should now have 1 org, not 3 (last-writer-wins, not append-append)
+
+  -- Both waiters ran, and the org list reflects the one completed fetch.
+  eq(child.lua_get([[_G.done_count]]), 2)
   eq(child.lua_get([[#(M.__test.orgs)]]), 1)
+end
+
+T["fetch_org_list"]["a call after the in-flight job completes spawns a genuinely fresh fetch"] = function()
+  child.lua([[
+    local util = require("sf.util")
+    util.is_sf_cmd_installed = function() end
+
+    local call_count = 0
+    vim.fn.jobstart = function(cmd, opts)
+      call_count = call_count + 1
+      local org_json = '{"alias":"org' .. call_count .. '","username":"user' .. call_count .. '","isScratch":false,"isSandbox":false,"isDefaultUsername":false,"isDefaultDevHubUsername":false}'
+      opts.on_stdout(nil, { '{"result":{"nonScratchOrgs":[' .. org_json .. '],"scratchOrgs":[]}}' })
+      opts.on_exit()
+      return call_count
+    end
+
+    M.fetch_org_list(function() end)
+    M.fetch_org_list(function() end) -- nothing in flight anymore -- must spawn again, not reuse a stale result
+    _G.call_count = call_count
+  ]])
+
+  eq(child.lua_get([[_G.call_count]]), 2)
+end
+
+T["store_orgs"] = new_set({ hooks = { pre_case = mock_test } })
+
+T["store_orgs"]["upserts idempotently: calling it twice with the same payload does not duplicate rows"] = function()
+  child.lua([[
+    H = M.__test
+    H.orgs = {}
+    local payload = { '{"result":{"nonScratchOrgs":[{"alias":"org1","username":"user1","isScratch":false,"isSandbox":false,"isDefaultUsername":false,"isDefaultDevHubUsername":false}],"scratchOrgs":[]}}' }
+    H.store_orgs(payload)
+    H.store_orgs(payload)
+  ]])
+  eq(child.lua_get([[#H.orgs]]), 1)
 end
 --
 -- T['get()']['target_org empty then err'] = function()
@@ -342,9 +357,36 @@ end
 
 T["open_dashboard"] = new_set()
 
-T["open_dashboard"]["does not open dashboard when org list is empty"] = function()
+T["open_dashboard"]["fetches the org list first, then opens once orgs are populated"] = function()
+  child.lua([[
+    H = M.__test
+    H.orgs = {}
+    H.fetch_org_list = function(on_done)
+      H.orgs = { { alias = "one" } }
+      on_done()
+    end
+
+    local dashboard_module = require("sf.ui.org_dashboard")
+    local original_open = dashboard_module.open
+    _dashboard_open_called = false
+    dashboard_module.open = function()
+      _dashboard_open_called = true
+    end
+
+    M.open_dashboard()
+    dashboard_module.open = original_open
+  ]])
+
+  eq(child.lua_get([[_dashboard_open_called]]), true)
+end
+
+T["open_dashboard"]["does not open dashboard when the fetch still yields no orgs"] = function()
   child.lua([[
     util = require("sf.util")
+    H = M.__test
+    H.orgs = {}
+    H.fetch_org_list = function(on_done) on_done() end
+
     _show_err_message = nil
     util.show_err = function(msg)
       _show_err_message = msg
@@ -361,7 +403,7 @@ T["open_dashboard"]["does not open dashboard when org list is empty"] = function
     dashboard_module.open = original_open
   ]])
 
-  eq(child.lua_get([[_show_err_message]]), "No orgs available. Run :SF org list first.")
+  eq(child.lua_get([[_show_err_message ~= nil]]), true)
   eq(child.lua_get([[_dashboard_open_called]]), false)
 end
 
@@ -412,14 +454,29 @@ T["set_target_org"] = new_set({
   },
 })
 
-T["set_target_org"]["does not open selector when org list is empty"] = function()
+T["set_target_org"]["does not open selector when the org list is (still) empty after fetching"] = function()
   child.lua([[
     H.orgs = {}
+    H.fetch_org_list = function(on_done) on_done() end
     _G.called = false
     vim.ui.select = function() _G.called = true end
     M.set_target_org()
   ]])
   eq(child.lua_get([[_G.called]]), false) -- vim.ui.select should not be called
+end
+
+T["set_target_org"]["fetches the org list first when empty, then opens the selector"] = function()
+  child.lua([[
+    H.orgs = {}
+    H.fetch_org_list = function(on_done)
+      H.orgs = { { alias = "one", username = "one@example.com" } }
+      on_done()
+    end
+    _G.called = false
+    vim.ui.select = function() _G.called = true end
+    M.set_target_org()
+  ]])
+  eq(child.lua_get([[_G.called]]), true)
 end
 
 T["set_target_org"]["calls vim.ui.select with formatted org items"] = function()
@@ -627,9 +684,10 @@ T["diff_in_org"] = new_set({
   },
 })
 
-T["diff_in_org"]["does not open selector when org list is empty"] = function()
+T["diff_in_org"]["does not open selector when the org list is (still) empty after fetching"] = function()
   child.lua([[
     H.orgs = {}
+    H.fetch_org_list = function(on_done) on_done() end
     _G.called = false
     vim.ui.select = function() _G.called = true end
     M.diff_in_org()

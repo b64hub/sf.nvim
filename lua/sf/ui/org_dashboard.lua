@@ -47,7 +47,7 @@ end
 ---@param opts table { prompt = string }
 function dashboard.open(records, opts)
   if #records == 0 then
-    return vim.notify("Sf: no orgs available. Run :SF org list first.", vim.log.levels.WARN)
+    return vim.notify("Sf: no orgs available. Run :SF org fetchList first.", vim.log.levels.WARN)
   end
 
   -- Singleton guard: if a dashboard is already open, re-focus its list window
