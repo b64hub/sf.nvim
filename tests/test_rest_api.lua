@@ -136,6 +136,44 @@ test_set["curl_json: decodes JSON null as Lua nil, not vim.NIL"] = function()
   eq(child.lua_get([[_G._decoded.records[1].Name]]), "Pkg")
 end
 
+-- Regression: curl_json used to unconditionally overwrite decoded.status
+-- with the HTTP status code, clobbering a real `status` field the body
+-- already had (e.g. status.salesforce.com's org status, "OK"/"MAJOR_INCIDENT")
+-- and making org_status.lua always read "unknown".
+test_set["curl_json: preserves a body-provided `status` field instead of overwriting with the HTTP code"] = function()
+  child.lua([[
+    local original_call = Util.silent_system_call
+    Util.silent_system_call = function(_, _, _, cb)
+      local body = vim.json.encode({ status = "OK", key = "NA1" })
+      cb({ stdout = body .. "\nHTTPSTATUS:200" })
+    end
+    _G._decoded = nil
+    Api.curl_json({}, function(decoded)
+      _G._decoded = decoded
+    end)
+    Util.silent_system_call = original_call
+  ]])
+
+  eq(child.lua_get([[_G._decoded.status]]), "OK")
+end
+
+test_set["curl_json: falls back to the HTTP status code when the body has none"] = function()
+  child.lua([[
+    local original_call = Util.silent_system_call
+    Util.silent_system_call = function(_, _, _, cb)
+      local body = vim.json.encode({ id = "abc" })
+      cb({ stdout = body .. "\nHTTPSTATUS:201" })
+    end
+    _G._decoded = nil
+    Api.curl_json({}, function(decoded)
+      _G._decoded = decoded
+    end)
+    Util.silent_system_call = original_call
+  ]])
+
+  eq(child.lua_get([[_G._decoded.status]]), 201)
+end
+
 test_set["get_org_display: two calls for the same alias spawn silent_system_call once (coalescing)"] = function()
   child.lua([[
     local call_count = 0

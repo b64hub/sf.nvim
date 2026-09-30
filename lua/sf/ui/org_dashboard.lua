@@ -4,6 +4,7 @@
 -- on cursor movement.
 
 local util = require("sf.util")
+local Icons = require("sf.ui.icons")
 local Layout = require("sf.ui.layout")
 local org_view = require("sf.ui.org_view")
 local dashboard_views = require("sf.ui.dashboard_views")
@@ -15,6 +16,16 @@ local dashboard = {}
 -- Singleton guard: hold the active session so only one dashboard instance
 -- can be open at a time.
 local active_session = nil
+
+--- Repaint the org list pane if a dashboard is open, e.g. after a
+--- background org-list refresh (helpers.orgs is mutated in place, so this
+--- is the only thing an outside caller still needs to trigger by hand).
+--- No-op when no dashboard is open or its window has since closed.
+function dashboard.refresh_list()
+  if active_session and vim.api.nvim_win_is_valid(active_session.list_window) then
+    active_session.repaint_list()
+  end
+end
 
 --- Handle a winbar tab click. Called by Neovim's winbar click routing.
 ---@param minwid number 1-based index into views.tab_views(), passed by Neovim
@@ -150,7 +161,7 @@ function dashboard.open(records, opts)
       return " Org "
     end
     local record = current_record_func()
-    return record and (" " .. record.alias .. " ") or " Org "
+    return record and (" " .. Icons.CLOUD .. " " .. record.alias .. " ") or " Org "
   end
 
   local view_win_opts = {
@@ -286,6 +297,57 @@ function dashboard.open(records, opts)
     org_view.paint(session.view_buffer, lines, line_hls)
   end
 
+  -- Views whose fetch result is worth persisting to disk as a last-known-
+  -- good snapshot, so the *next* nvim session can show it instantly while
+  -- refreshing in the background instead of a spinner. Deliberately a
+  -- positive list, not "everything except logs/trace_flags": logs and
+  -- trace flags are excluded because they're expected to change constantly
+  -- and a stale list is actively misleading, but any *new* tab added later
+  -- should have to opt in too, not silently start caching to disk.
+  local DISK_CACHEABLE_VIEWS = { details = true, limits = true, packages = true }
+
+  local view_disk_cache_file = function(record, view_id)
+    return string.format("dashboard_%s_%s.json", record.alias, view_id)
+  end
+
+  -- Only the "details" fetch can hand back a non-nil result that's still
+  -- a total failure (it always calls back with err = nil to avoid
+  -- blanking the pane on a partial failure -- see its fetch in
+  -- dashboard_views.lua) -- guard against persisting that as if it were
+  -- good data. Every other cacheable view already returns nil on error.
+  local view_result_is_persistable = function(view_id, result)
+    if view_id == "details" then
+      return result.detail ~= nil
+    end
+    return true
+  end
+
+  -- Disk snapshot for a disk-cacheable view, or nil (both for views that
+  -- never persist, and on any cache miss/read failure).
+  local seed_from_disk = function(record, view_id)
+    if not DISK_CACHEABLE_VIEWS[view_id] then
+      return nil
+    end
+    return util.read_cache_json(view_disk_cache_file(record, view_id))
+  end
+
+  -- Shared "fetch landed" handling for show_view and fetch_view_into_cache:
+  -- store the fresh result (persisting it if this view is disk-cacheable),
+  -- or -- on a failed background refresh that already had seeded/stale
+  -- data on screen -- keep showing that instead of blanking the pane.
+  local settle_view_cache = function(record, view_id, cache_key, seed, result, err)
+    if result then
+      session.cache[cache_key] = { fetching = false, data = result, err = nil }
+      if DISK_CACHEABLE_VIEWS[view_id] and view_result_is_persistable(view_id, result) then
+        util.write_cache_json(view_disk_cache_file(record, view_id), result)
+      end
+    elseif seed then
+      session.cache[cache_key] = { fetching = false, data = seed, err = nil }
+    else
+      session.cache[cache_key] = { fetching = false, data = nil, err = err }
+    end
+  end
+
   -- Fetch a view into cache without a spinner (used for prefetching background views).
   -- Returns immediately when cache already has data or a fetch is in-flight.
   -- on_painted is optional; prefetch uses it to selectively re-render only when
@@ -305,13 +367,14 @@ function dashboard.open(records, opts)
     end
 
     local current_gen = session.generation
-    session.cache[cache_key] = { fetching = true, data = nil }
+    local seed = seed_from_disk(record, view_id)
+    session.cache[cache_key] = { fetching = true, data = seed }
 
     view_desc.fetch(record, function(result, err)
       if current_gen ~= session.generation then
         return
       end
-      session.cache[cache_key] = { fetching = false, data = result, err = err }
+      settle_view_cache(record, view_id, cache_key, seed, result, err)
       if on_painted then
         on_painted()
       end
@@ -330,7 +393,7 @@ function dashboard.open(records, opts)
         -- changed, and the window is still open.
         if
           tab_desc.id == session.active_view_id
-          and record.alias == (current_record() or {}).alias
+          and record.alias == (current_record_func() or {}).alias
           and vim.api.nvim_win_is_valid(session.view_window)
         then
           paint_view(record, 0)
@@ -371,28 +434,35 @@ function dashboard.open(records, opts)
     local current_gen = session.generation
 
     stop_spinner()
-    session.cache[cache_key] = { fetching = true, data = nil }
+
+    -- Seed from disk (if this view persists a snapshot) so the tab shows
+    -- last-known-good data instantly instead of a spinner; the fetch below
+    -- still runs and refreshes it in the background either way.
+    local seed = seed_from_disk(record, view_id)
+    session.cache[cache_key] = { fetching = true, data = seed }
     paint_view(record, frame)
 
-    session.spinner_timer = vim.uv.new_timer()
-    session.spinner_timer:start(
-      0,
-      100,
-      vim.schedule_wrap(function()
-        if current_gen ~= session.generation or not vim.api.nvim_win_is_valid(session.view_window) then
-          return
-        end
-        frame = frame + 1
-        paint_view(record, frame)
-      end)
-    )
+    if not seed then
+      session.spinner_timer = vim.uv.new_timer()
+      session.spinner_timer:start(
+        0,
+        100,
+        vim.schedule_wrap(function()
+          if current_gen ~= session.generation or not vim.api.nvim_win_is_valid(session.view_window) then
+            return
+          end
+          frame = frame + 1
+          paint_view(record, frame)
+        end)
+      )
+    end
 
     view_desc.fetch(record, function(result, err)
       if current_gen ~= session.generation then
         return
       end
       stop_spinner()
-      session.cache[cache_key] = { fetching = false, data = result, err = err }
+      settle_view_cache(record, view_id, cache_key, seed, result, err)
       if vim.api.nvim_win_is_valid(session.view_window) then
         paint_view(record, 0)
       end
@@ -590,9 +660,11 @@ function dashboard.open(records, opts)
     end, { buffer = session.list_buffer, nowait = true })
   end
 
-  -- Attach helper functions to session so handle_tab_click can access them
+  -- Attach helper functions to session so handle_tab_click (and
+  -- dashboard.refresh_list) can access them
   session.show_view = show_view
   session.current_record = current_record
+  session.repaint_list = repaint_list
   session.update_tab_strip = update_tab_strip
 
   -- Initialize the winbar with the current tab strip

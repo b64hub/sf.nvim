@@ -296,6 +296,44 @@ util.is_installed = function(plugin_name)
   return pcall(require, plugin_name)
 end
 
+--- Silently read and JSON-decode `<plugin folder>/<file_name>`, returning
+--- nil on any failure (not in an sf project, file missing, unreadable,
+--- malformed JSON) -- unlike read_file_json_to_tbl, this never notifies:
+--- a cache miss is the normal, expected first-run state for a cache, not
+--- a warning-worthy error.
+---@param file_name string
+---@return table|nil
+util.read_cache_json = function(file_name)
+  local ok_path, folder_path = pcall(util.get_plugin_folder_path)
+  if not ok_path then
+    return nil
+  end
+  local ok_read, lines = pcall(vim.fn.readfile, folder_path .. file_name)
+  if not ok_read then
+    return nil
+  end
+  local ok_decode, decoded = pcall(vim.json.decode, table.concat(lines, "\n"))
+  if not ok_decode or type(decoded) ~= "table" then
+    return nil
+  end
+  return decoded
+end
+
+--- Silently JSON-encode and write `tbl` to `<plugin folder>/<file_name>`,
+--- creating the plugin folder if needed. Best-effort: a write failure is
+--- swallowed, since every caller already has a working in-memory result
+--- and this is only a cache for next time.
+---@param file_name string
+---@param tbl table
+util.write_cache_json = function(file_name, tbl)
+  local ok_path, folder_path = pcall(util.get_plugin_folder_path)
+  if not ok_path then
+    return
+  end
+  util.create_plugin_folder_if_not_exist()
+  pcall(vim.fn.writefile, { vim.json.encode(tbl) }, folder_path .. file_name)
+end
+
 ---@param name string
 ---@return table|nil
 util.read_file_in_plugin_folder = function(name)

@@ -136,6 +136,83 @@ end
 --   expect.error(function() child.lua([[M.get()]]) end)
 -- end
 
+T["with_orgs"] = new_set({
+  hooks = {
+    pre_case = function()
+      child.lua([[
+        H = M.__test
+        H.orgs = {}
+        util = require("sf.util")
+        util.show = function() end
+        util.show_err = function() end
+      ]])
+    end,
+  },
+})
+
+T["with_orgs"]["seeds from the on-disk snapshot instantly, then refreshes in the background"] = function()
+  child.lua([[
+    util.read_cache_json = function(file_name)
+      if file_name == H.ORG_LIST_CACHE_FILE then
+        return { { alias = "cached_org", username = "user@example.com" } }
+      end
+      return nil
+    end
+
+    -- Never calls on_done in this test -- only care that it was reached,
+    -- and that it was reached *after* fn already ran with the seeded data.
+    _G.background_fetch_started = false
+    H.fetch_org_list = function(_)
+      _G.background_fetch_started = true
+    end
+
+    _G.fn_called_with = nil
+    H.with_orgs(function()
+      _G.fn_called_with = vim.deepcopy(H.orgs)
+    end)
+  ]])
+
+  eq(child.lua_get([[_G.fn_called_with ~= nil]]), true)
+  eq(child.lua_get([[_G.fn_called_with[1].alias]]), "cached_org")
+  eq(child.lua_get([[_G.background_fetch_started]]), true)
+end
+
+T["with_orgs"]["falls back to a blocking fetch when there is no disk snapshot either"] = function()
+  child.lua([[
+    util.read_cache_json = function() return nil end
+
+    _G.fetch_called = false
+    H.fetch_org_list = function(on_done)
+      _G.fetch_called = true
+      H.orgs = { { alias = "fresh_org" } }
+      on_done()
+    end
+
+    _G.fn_called_with = nil
+    H.with_orgs(function()
+      _G.fn_called_with = vim.deepcopy(H.orgs)
+    end)
+  ]])
+
+  eq(child.lua_get([[_G.fetch_called]]), true)
+  eq(child.lua_get([[_G.fn_called_with[1].alias]]), "fresh_org")
+end
+
+T["with_orgs"]["already-populated helpers.orgs short-circuits both the disk read and the fetch"] = function()
+  child.lua([[
+    H.orgs = { { alias = "already_loaded" } }
+    util.read_cache_json = function() error("must not be called") end
+    H.fetch_org_list = function() error("must not be called") end
+
+    _G.fn_called_with = nil
+    H.with_orgs(function()
+      _G.fn_called_with = vim.deepcopy(H.orgs)
+    end)
+  ]])
+
+  eq(child.lua_get([[_G.fn_called_with[1].alias]]), "already_loaded")
+end
+
 T["mark_default"] = new_set({
   hooks = {
     pre_case = function()

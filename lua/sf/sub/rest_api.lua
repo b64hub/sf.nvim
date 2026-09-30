@@ -135,7 +135,13 @@ rest_api.curl_json = function(args, cb)
     if decoded[1] and decoded[1].message and decoded[1].errorCode then
       return cb(nil, decoded[1].message)
     end
-    decoded.status = status
+    -- Only fill in the HTTP status when the body didn't already define its
+    -- own `status` field -- status.salesforce.com's org-status endpoint
+    -- returns a real `status` ("OK"/"MAJOR_INCIDENT"/...) that this used to
+    -- clobber with the HTTP code (e.g. 200), making org_status.lua always
+    -- read "unknown". Empty-body callers (the update/delete 204 checks)
+    -- never reach this line -- they return earlier via the empty-body branch.
+    decoded.status = decoded.status or status
     cb(decoded, nil)
   end)
 end

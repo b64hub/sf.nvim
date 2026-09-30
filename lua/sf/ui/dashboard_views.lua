@@ -197,21 +197,19 @@ local function is_past(iso_datetime)
   return timestamp < os.time()
 end
 
---- Append a titled table section (a header row plus data rows, or a
+--- Append a table section (a column-header row plus data rows, or a
 --- fallback message when there are no rows) to `lines`/`line_hls` in
 --- place, followed by a blank separator line. Shared by the
---- Products/Maintenances/Messages sections of render_status_section so the
---- "title + table-or-empty-message" shape isn't repeated three times.
+--- Products/Maintenances/Messages/Incidents sections of
+--- render_status_section so the "table-or-empty-message" shape isn't
+--- repeated four times. No standalone title line -- the column headers
+--- already say what the table is.
 ---@param lines string[] appended in place
 ---@param line_hls table[] appended in place
----@param title string section title, rendered as "Title:"
 ---@param header_cells string[] column headers
 ---@param rows table[] each a { cells = {...} } row for org_view.render_columns
 ---@param empty_message string shown instead of a table when rows is empty
-local function append_table_section(lines, line_hls, title, header_cells, rows, empty_message)
-  table.insert(lines, title .. ":")
-  table.insert(line_hls, {})
-
+local function append_table_section(lines, line_hls, header_cells, rows, empty_message)
   if #rows == 0 then
     table.insert(lines, empty_message)
     table.insert(line_hls, {})
@@ -294,7 +292,7 @@ local function render_status_section(status_data, status_err)
     end
     table.insert(product_rows, row)
   end
-  append_table_section(lines, line_hls, "Products", { "Product", "Status" }, product_rows, "No product data.")
+  append_table_section(lines, line_hls, { "Product", "Status" }, product_rows, "No product data.")
 
   local maintenance_rows = {}
   for _, maintenance in ipairs(status_data.maintenances or {}) do
@@ -314,7 +312,6 @@ local function render_status_section(status_data, status_err)
   append_table_section(
     lines,
     line_hls,
-    "Maintenances",
     { "Maintenance", "Status", "Start", "End" },
     maintenance_rows,
     "No scheduled maintenance."
@@ -338,7 +335,6 @@ local function render_status_section(status_data, status_err)
   append_table_section(
     lines,
     line_hls,
-    "Messages",
     { "Message", "Status", "Start", "End" },
     message_rows,
     "No general messages."
@@ -368,7 +364,6 @@ local function render_status_section(status_data, status_err)
   append_table_section(
     lines,
     line_hls,
-    "Incidents",
     { "Incident", "Status", "Type", "Severity", "Start", "End" },
     incident_rows,
     "No incidents reported."

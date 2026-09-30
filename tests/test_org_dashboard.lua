@@ -1037,4 +1037,151 @@ test_set["arrow keys: j/k still control org selection, not view scroll"] = funct
   eq(content_second:find("org_b") ~= nil, true)
 end
 
+test_set["disk cache: a cacheable tab persists its result and seeds the next open instantly"] = function()
+  child.lua([[
+    local util = require("sf.util")
+    TMP_CACHE_DIR = vim.fn.tempname() .. "/"
+    vim.fn.mkdir(TMP_CACHE_DIR, "p")
+    util.get_plugin_folder_path = function() return TMP_CACHE_DIR end
+
+    -- Swap the real "packages" view's fetch for a counting/delayable stub.
+    -- Its id stays "packages" -- what org_dashboard.lua's disk-cache
+    -- allowlist keys off -- so this exercises the real seed/persist code
+    -- path without needing to mock rest_api/session plumbing underneath.
+    _G.packages_fetch_count = 0
+    _G.packages_names = { "PkgOne", "PkgTwo" }
+    for _, view_desc in ipairs(dashboard_views) do
+      if view_desc.id == "packages" then
+        view_desc.fetch = function(_, callback)
+          _G.packages_fetch_count = _G.packages_fetch_count + 1
+          local name = _G.packages_names[_G.packages_fetch_count] or "PkgOther"
+          -- First call resolves ~immediately; the second (background,
+          -- post-reopen) call is deliberately slower so the test can
+          -- observe the seeded/stale paint before it lands.
+          local delay = _G.packages_fetch_count == 1 and 0 or 200
+          vim.defer_fn(function()
+            callback({
+              {
+                SubscriberPackage = { Name = name, NamespacePrefix = vim.NIL },
+                SubscriberPackageVersion = { MajorVersion = 1, MinorVersion = 0 },
+              },
+            }, nil)
+          end, delay)
+        end
+      end
+    end
+
+    records = {
+      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+    }
+
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  local buffer_has = function(needle)
+    return child.lua(string.format(
+      [[
+      for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.bo[buf].filetype == "SfOrgDashboard" then
+          local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+          for _, line in ipairs(lines) do
+            if line:find(%q, 1, true) then
+              return true
+            end
+          end
+        end
+      end
+      return false
+    ]],
+      needle
+    ))
+  end
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("p")]])
+  child.lua([[vim.wait(80, function() return false end, 50)]])
+
+  -- First-ever fetch: no disk cache yet, real fetch lands, result shown.
+  eq(child.lua_get([[_G.packages_fetch_count]]), 1)
+  eq(buffer_has("PkgOne"), true)
+
+  -- Close and reopen (fresh session.cache) to simulate the dashboard being
+  -- opened again -- "packages.json" is now on disk from the fetch above.
+  child.lua([[vim.api.nvim_input("q")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  child.lua([[dashboard.open(records, { prompt = "Orgs" })]])
+  -- Reopening alone (via its own cursor-landed prefetch) already seeds
+  -- "org1:packages" from disk and kicks off the (200ms-delayed) real
+  -- fetch; switching tabs just makes it the painted view.
+  child.lua([[vim.api.nvim_input("p")]])
+  child.lua([[vim.wait(20, function() return false end, 20)]])
+
+  -- Well before the stubbed 200ms background fetch resolves: last
+  -- session's data is already on screen, seeded straight from disk.
+  eq(buffer_has("PkgOne"), true)
+  eq(buffer_has("PkgTwo"), false)
+
+  -- Once the background refresh lands, the pane updates and disk is
+  -- re-persisted with the fresh result.
+  child.lua([[vim.wait(250, function() return false end, 50)]])
+  eq(child.lua_get([[_G.packages_fetch_count]]), 2)
+  eq(buffer_has("PkgTwo"), true)
+end
+
+test_set["disk cache: a failed background refresh keeps showing the seeded data instead of blanking to an error"] = function()
+  child.lua([[
+    local util = require("sf.util")
+    TMP_CACHE_DIR = vim.fn.tempname() .. "/"
+    vim.fn.mkdir(TMP_CACHE_DIR, "p")
+    util.get_plugin_folder_path = function() return TMP_CACHE_DIR end
+    util.write_cache_json("dashboard_org1_packages.json", {
+      {
+        SubscriberPackage = { Name = "SeededPkg", NamespacePrefix = vim.NIL },
+        SubscriberPackageVersion = { MajorVersion = 1, MinorVersion = 0 },
+      },
+    })
+
+    for _, view_desc in ipairs(dashboard_views) do
+      if view_desc.id == "packages" then
+        view_desc.fetch = function(_, callback)
+          vim.schedule(function()
+            callback(nil, "boom: org unreachable")
+          end)
+        end
+      end
+    end
+
+    records = {
+      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+    }
+
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("p")]])
+  child.lua([[vim.wait(80, function() return false end, 50)]])
+
+  local found = child.lua([[
+    _G.has_seed, _G.has_error = false, false
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.bo[buf].filetype == "SfOrgDashboard" then
+        local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+        for _, line in ipairs(lines) do
+          if line:find("SeededPkg", 1, true) then
+            _G.has_seed = true
+          end
+          if line:find("Failed to load", 1, true) then
+            _G.has_error = true
+          end
+        end
+      end
+    end
+    return { seed = _G.has_seed, err = _G.has_error }
+  ]])
+
+  eq(found.seed, true)
+  eq(found.err, false)
+end
+
 return test_set

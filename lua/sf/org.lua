@@ -260,6 +260,7 @@ helpers.pick_org_log = function(dir, on_done)
 end
 
 helpers.orgs = {} -- array of { alias, username, is_scratch, is_sandbox, is_prod, is_default, expiration_date }
+helpers.ORG_LIST_CACHE_FILE = "orgs.json" -- last-known-good snapshot; see store_orgs/with_orgs
 
 --- Open a specific org (not necessarily the target_org) in the browser.
 ---@param alias string
@@ -353,6 +354,25 @@ end
 helpers.with_orgs = function(fn)
   if not vim.tbl_isempty(helpers.orgs) then
     return fn()
+  end
+
+  -- Cold start: seed from last session's snapshot (if any) so `fn` (e.g.
+  -- opening the dashboard) runs immediately instead of blocking on `sf org
+  -- list`, then refresh for real in the background. helpers.orgs is
+  -- mutated in place by store_orgs, so anything already holding a
+  -- reference to it (the dashboard's left pane) picks up the refresh too --
+  -- it just needs telling to repaint, hence the org_dashboard call below.
+  local cached_orgs = util.read_cache_json(helpers.ORG_LIST_CACHE_FILE)
+  if cached_orgs and #cached_orgs > 0 then
+    for _, record in ipairs(cached_orgs) do
+      table.insert(helpers.orgs, record)
+    end
+    Org.refresh_target_org_from_disk()
+    fn()
+    helpers.fetch_org_list(function()
+      require("sf.ui.org_dashboard").refresh_list()
+    end)
+    return
   end
 
   util.show("Fetching org list...")
@@ -452,6 +472,11 @@ helpers.store_orgs = function(data)
   -- statusline's org from disk instead, now that `helpers.orgs` has metadata to
   -- match the alias against.
   Org.refresh_target_org_from_disk()
+
+  -- Snapshot for next session: `with_orgs` seeds instantly from this on a
+  -- cold start instead of blocking on `sf org list` before it can even
+  -- open the dashboard, then refreshes for real in the background.
+  util.write_cache_json(helpers.ORG_LIST_CACHE_FILE, helpers.orgs)
 end
 
 -- Coalescing-only cache (ttl_seconds = 0, the default) for `sf org list`:
