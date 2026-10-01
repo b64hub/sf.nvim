@@ -800,7 +800,11 @@ function views.render_winbar(active_view_id)
   -- Plain space between segments (not colored, not a glyph) -- the
   -- highlight change between an SfTitle and SfFooter segment is what
   -- reads as a tab boundary; add a left-anchor truncation marker at the end.
-  return table.concat(segments, " ") .. "%<"
+  -- Reset to the plain winbar highlight after the last segment -- a %#Group#
+  -- otherwise stays in effect through the rest of the line's fill, so an
+  -- active (SfTitle) rightmost tab would paint the whole empty remainder of
+  -- the winbar instead of just its own label.
+  return table.concat(segments, " ") .. "%#SfNormal#%<"
 end
 
 -- Export filter_logs, format_limits, and flatten_package_row for testing
