@@ -44,6 +44,11 @@ key_bindings.set_default_hotkeys = function()
   nmap("<leader>sfa", function() sf.run_anonymous_stdin(false) end, "run this buffer anonymously")
   nmap("<leader>sfA", sf.run_anonymous, "run this file anonymously")
 
+  vim.keymap.set("v", "<leader>sfe", function()
+    sf.run_anonymous_api(true)
+  end, { buffer = true, desc = "run selected content anonymously (API, async)" })
+  nmap("<leader>sfe", function() sf.run_anonymous_api(false) end, "run this buffer anonymously (API, async)")
+
   -- Hotkeys for metadata files only;
   if vim.tbl_contains(vim.g.sf.hotkeys_in_filetypes, vim.bo.filetype) then
     nmap("<leader>sfO", sf.org_open_current_file, "open file in target_org")

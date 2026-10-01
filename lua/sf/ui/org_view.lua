@@ -162,22 +162,17 @@ end
 ---@return string[] lines, table[] per-line highlight segments
 function org_view.render_detail_lines(record, frame, detail, err)
   local lines, line_hls = {}, {}
-  local org_part = Icons.CLOUD .. " " .. (record.alias or "")
-  lines[1] = org_part
-  line_hls[1] = { { group = org_view.highlight_for(record), col_start = 0, col_end = #org_part } }
-  lines[2] = ""
-  line_hls[2] = {}
 
   if err then
-    lines[3] = "Failed to load: " .. err
-    line_hls[3] = { { group = "SfError", col_start = 0, col_end = #lines[3] } }
+    lines[1] = "Failed to load: " .. err
+    line_hls[1] = { { group = "SfError", col_start = 0, col_end = #lines[1] } }
     return lines, line_hls
   end
 
   if not detail then
     local spinner = org_view.SPINNER_FRAMES[(frame % #org_view.SPINNER_FRAMES) + 1]
-    lines[3] = spinner .. " Loading `sf org display`..."
-    line_hls[3] = { { group = "SfSpinner", col_start = 0, col_end = #lines[3] } }
+    lines[1] = spinner .. " Loading `sf org display`..."
+    line_hls[1] = { { group = "SfSpinner", col_start = 0, col_end = #lines[1] } }
     return lines, line_hls
   end
 
@@ -196,7 +191,7 @@ function org_view.render_detail_lines(record, frame, detail, err)
 
   local add_row = function(key, value)
     table.insert(lines, org_view.pad(key, key_w) .. "  " .. tostring(value))
-    table.insert(line_hls, { { group = "SfStatusOrg", col_start = 0, col_end = key_w } })
+    table.insert(line_hls, { { group = "SfDim", col_start = 0, col_end = key_w } })
   end
 
   for _, key in ipairs(org_view.DETAIL_KEY_ORDER) do

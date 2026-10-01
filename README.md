@@ -673,7 +673,18 @@ diffIn`) use a quick picker prompt.
 ```lua
 require('sf').setup({
   ui = {
-    accent = "#1B96FF",  -- border/title/icon color
+    accent = "#1B96FF",  -- border/title/icon color, and the default every
+                          -- org-type color below inherits from
+
+    -- Per-org-type cloud/status colors (dashboard org list, statusline).
+    -- Each defaults to a shade of `accent` above when left nil -- set any
+    -- of these to break that one org type out onto its own color instead.
+    colors = {
+      prod = nil,     -- defaults to `accent` (bold)
+      sandbox = nil,  -- defaults to a lightened tint of `accent`
+      scratch = nil,  -- defaults to a muted/darkened shade of `accent`
+    },
+
     border = "rounded",
     icons = true,        -- set false if you don't have a Nerd Font
 
@@ -768,7 +779,14 @@ The left pane shows your org list (color-coded by type: Salesforce blue for prod
 | Key | Action |
 | --- | --- |
 | `f` | Filter logs by query string |
-| `<CR>` | Download the log under the cursor (requires focus in the right pane) |
+| `<CR>` | Download the log under the cursor, open it, and close the dashboard |
+| `D` | Download the log under the cursor without opening it or closing the dashboard -- grab several in a row |
+
+The cursor under `<CR>`/`D` is the right pane's, but both are bound on either
+pane: `<Down>`/`<Up>` already move the right pane's cursor without leaving
+the left one, so picking and downloading a log never requires `<C-w>w`.
+Logs download via the Tooling API straight to `.sfdx/tools/debug/logs/`
+(the same place the Apex Replay Debugger's local-log picker looks).
 
 ### Overriding colors
 
@@ -779,7 +797,10 @@ or your own `vim.api.nvim_set_hl(0, "SfBorder", { fg = "#your-color" })`
 `SfSuccess`, `SfError`, `SfWarn`, `SfStatusOrg`, `SfStatusProd`,
 `SfStatusSandbox`, `SfStatusScratch`, `SfStatusTrace`. The simplest way to
 rebrand everything at once is `ui.accent` in `setup()`, which most of these
-derive from by default.
+derive from by default -- including the per-org-type `SfStatusProd`/
+`SfStatusSandbox`/`SfStatusScratch` colors, each of which can also be set
+independently via `ui.colors.prod`/`sandbox`/`scratch` (see the config
+reference above) without touching `accent` itself.
 
 <br>
 

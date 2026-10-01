@@ -374,17 +374,18 @@ test_set["merged details: status section renders instance info, products, mainte
   expect.match(line_content, "EMEA")
   expect.match(line_content, "Summer '26 Patch 14.21")
   expect.match(line_content, "Saturdays 2:00 PM %- 6:00 PM PST")
-  -- Products / Maintenances / Messages sections and their headers
-  expect.match(line_content, "Products:")
+  -- Products / Maintenances / Messages / Incidents sections: no standalone
+  -- title line, just a column-header row followed by data rows.
+  expect.match(line_content, "Product%s+Status")
   expect.match(line_content, "Sales and Service")
   expect.match(line_content, "Available")
-  expect.match(line_content, "Maintenances:")
+  expect.match(line_content, "Maintenance%s+Status%s+Start%s+End")
   expect.match(line_content, "Winter '27 Major Release")
   expect.match(line_content, "2026%-10%-09 21:30") -- format_status_date compacted the ISO datetime
-  expect.match(line_content, "Messages:")
+  expect.match(line_content, "Message%s+Status%s+Start%s+End")
   expect.match(line_content, "Security Advisory")
   -- Incidents are now tabulated with headers and data rows
-  expect.match(line_content, "Incidents:")
+  expect.match(line_content, "Incident%s+Status%s+Type%s+Severity%s+Start%s+End")
   expect.match(line_content, "Root cause identified")
   expect.match(line_content, "minor") -- severity column
   expect.match(line_content, "2026%-08%-19") -- impact start date

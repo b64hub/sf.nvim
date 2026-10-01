@@ -73,6 +73,12 @@ Sf.run_anonymous_stdin = Term.run_anonymous_stdin
 --- Run the file in the current buffer as anonymous apex in target_org
 Sf.run_anonymous = Term.run_anonymous
 
+--- Run the buffer content (or visual selection) as anonymous apex directly
+--- via the Tooling API's `executeAnonymous` endpoint - async, no terminal
+--- float, faster than the CLI, but doesn't capture `System.debug` log
+--- output (use `run_anonymous`/`run_anonymous_stdin` for that).
+Sf.run_anonymous_api = Term.run_anonymous_api
+
 --- Run the query defined in current buffer in target_org
 Sf.run_query = Term.run_query
 
@@ -127,7 +133,8 @@ Sf.org_open = Org.open
 --- Open the current file in the target_org in browser
 Sf.org_open_current_file = Org.open_current_file
 
---- Get a list of logs from the org, and choose one to download and open
+--- Browse logs for the target_org: opens the org dashboard on its Logs tab
+--- (fetch/filter/download all live there) instead of a separate picker.
 Sf.pull_log = Org.pull_log
 
 --- Re-read the target_org from the sf CLI's own config files (project
@@ -291,7 +298,7 @@ Sf.refresh_debug_breakpoint_info = Debug.refresh_breakpoint_info
 
 --- Enable Apex replay-ready debug logging (ApexCode=FINEST, Visualforce=FINER)
 --- for the current user by default, for `replay_debugger.trace_flag_hours`
---- (default 1h) or a given duration. Creates/reuses a `SFNVIM_REPLAY`
+--- (default 1h) or a given duration. Creates/reuses a `ReplayDebuggerLevels`
 --- DebugLevel and an active TraceFlag, via the Tooling REST API directly
 --- (one `sf org display` call, then plain `curl` — much faster than the `sf`
 --- CLI's per-invocation startup cost).

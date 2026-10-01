@@ -136,6 +136,44 @@ test_set["curl_json: decodes JSON null as Lua nil, not vim.NIL"] = function()
   eq(child.lua_get([[_G._decoded.records[1].Name]]), "Pkg")
 end
 
+-- Regression: curl_json used to unconditionally overwrite decoded.status
+-- with the HTTP status code, clobbering a real `status` field the body
+-- already had (e.g. status.salesforce.com's org status, "OK"/"MAJOR_INCIDENT")
+-- and making org_status.lua always read "unknown".
+test_set["curl_json: preserves a body-provided `status` field instead of overwriting with the HTTP code"] = function()
+  child.lua([[
+    local original_call = Util.silent_system_call
+    Util.silent_system_call = function(_, _, _, cb)
+      local body = vim.json.encode({ status = "OK", key = "NA1" })
+      cb({ stdout = body .. "\nHTTPSTATUS:200" })
+    end
+    _G._decoded = nil
+    Api.curl_json({}, function(decoded)
+      _G._decoded = decoded
+    end)
+    Util.silent_system_call = original_call
+  ]])
+
+  eq(child.lua_get([[_G._decoded.status]]), "OK")
+end
+
+test_set["curl_json: falls back to the HTTP status code when the body has none"] = function()
+  child.lua([[
+    local original_call = Util.silent_system_call
+    Util.silent_system_call = function(_, _, _, cb)
+      local body = vim.json.encode({ id = "abc" })
+      cb({ stdout = body .. "\nHTTPSTATUS:201" })
+    end
+    _G._decoded = nil
+    Api.curl_json({}, function(decoded)
+      _G._decoded = decoded
+    end)
+    Util.silent_system_call = original_call
+  ]])
+
+  eq(child.lua_get([[_G._decoded.status]]), 201)
+end
+
 test_set["get_org_display: two calls for the same alias spawn silent_system_call once (coalescing)"] = function()
   child.lua([[
     local call_count = 0
@@ -268,6 +306,76 @@ test_set["get_session now uses cached get_org_display"] = function()
   eq(#sessions, 2)
   eq(sessions[1].token, "tok")
   eq(sessions[2].token, "tok")
+end
+
+test_set["curl_raw: returns the raw body text on a 2xx response, unparsed"] = function()
+  child.lua([[
+    local original_call = Util.silent_system_call
+    Util.silent_system_call = function(_, _, _, cb)
+      cb({ stdout = "13:46:23.0 (1)|EXECUTION_STARTED\nnot json at all\nHTTPSTATUS:200" })
+    end
+    _G._body, _G._err = nil, "unset"
+    Api.curl_raw({}, function(body, err)
+      _G._body, _G._err = body, err
+    end)
+    Util.silent_system_call = original_call
+  ]])
+
+  eq(child.lua_get([[_G._body]]), "13:46:23.0 (1)|EXECUTION_STARTED\nnot json at all")
+  eq(child.lua_get([[_G._err]]), vim.NIL)
+end
+
+test_set["curl_raw: surfaces the Salesforce {message, errorCode} array on a non-2xx response"] = function()
+  child.lua([[
+    local original_call = Util.silent_system_call
+    Util.silent_system_call = function(_, _, _, cb)
+      local body = vim.json.encode({ { message = "Log not found", errorCode = "NOT_FOUND" } })
+      cb({ stdout = body .. "\nHTTPSTATUS:404" })
+    end
+    _G._body, _G._err = "unset", nil
+    Api.curl_raw({}, function(body, err)
+      _G._body, _G._err = body, err
+    end)
+    Util.silent_system_call = original_call
+  ]])
+
+  eq(child.lua_get([[_G._body]]), vim.NIL)
+  eq(child.lua_get([[_G._err]]), "Log not found")
+end
+
+test_set["curl_raw: falls back to a bare HTTP status when the error body isn't the usual JSON array"] = function()
+  child.lua([[
+    local original_call = Util.silent_system_call
+    Util.silent_system_call = function(_, _, _, cb)
+      cb({ stdout = "Internal Server Error\nHTTPSTATUS:500" })
+    end
+    _G._body, _G._err = "unset", nil
+    Api.curl_raw({}, function(body, err)
+      _G._body, _G._err = body, err
+    end)
+    Util.silent_system_call = original_call
+  ]])
+
+  eq(child.lua_get([[_G._body]]), vim.NIL)
+  eq(child.lua_get([[_G._err]]), "HTTP 500")
+end
+
+test_set["download_log_body: hits the ApexLog Body endpoint for the given log id"] = function()
+  child.lua([[
+    local captured_args
+    local original_call = Util.silent_system_call
+    Util.silent_system_call = function(cmd)
+      captured_args = cmd
+    end
+    Api.download_log_body({ url = "https://x", api_version = "60.0", token = "tok" }, "07Lxyz", function() end)
+    Util.silent_system_call = original_call
+    _G._captured = captured_args
+  ]])
+
+  local cmd = child.lua_get([[_G._captured]])
+  local joined = table.concat(cmd, " ")
+  eq(joined:find("https://x/services/data/v60.0/tooling/sobjects/ApexLog/07Lxyz/Body", 1, true) ~= nil, true)
+  eq(joined:find("Authorization: Bearer tok", 1, true) ~= nil, true)
 end
 
 return test_set

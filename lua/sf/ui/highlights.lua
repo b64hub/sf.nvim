@@ -58,12 +58,19 @@ end
 function M.setup()
   local ui = (vim.g.sf and vim.g.sf.ui) or {}
   local accent = ui.accent or "#1B96FF"
+  local colors = ui.colors or {}
 
   -- Derive chrome colors from accent
   local accent_darkened = shade(accent, 0.08) -- for high contrast on accent background
   local accent_dimmed = mix(accent, "#1a1a1a", 0.4) -- reduce saturation
   local accent_lightened = shade(accent, 1.45) -- light tint for secondary items
   local accent_muted = shade(accent, 0.72) -- darker shade for recessive items
+
+  -- Per-org-type colors: each inherits from `accent` (the plugin's one
+  -- "global" color) unless the user set it explicitly in `ui.colors`.
+  local prod_color = colors.prod or accent
+  local sandbox_color = colors.sandbox or accent_lightened
+  local scratch_color = colors.scratch or accent_muted
 
   set("SfBorder", { fg = accent })
   set("SfTitle", { fg = accent_darkened, bg = accent, bold = true })
@@ -77,9 +84,9 @@ function M.setup()
   set("SfError", { link = "DiagnosticError" })
   set("SfWarn", { link = "DiagnosticWarn" })
   set("SfStatusOrg", { fg = accent, bold = true })
-  set("SfStatusProd", { fg = accent, bold = true }) -- most saturated; production is critical
-  set("SfStatusSandbox", { fg = accent_lightened }) -- light tint
-  set("SfStatusScratch", { fg = accent_muted }) -- darker shade
+  set("SfStatusProd", { fg = prod_color, bold = true }) -- most saturated; production is critical
+  set("SfStatusSandbox", { fg = sandbox_color }) -- light tint by default
+  set("SfStatusScratch", { fg = scratch_color }) -- darker shade by default
   set("SfStatusTrace", { link = "DiagnosticWarn" })
 end
 

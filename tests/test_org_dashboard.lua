@@ -1037,4 +1037,363 @@ test_set["arrow keys: j/k still control org selection, not view scroll"] = funct
   eq(content_second:find("org_b") ~= nil, true)
 end
 
+test_set["disk cache: a cacheable tab persists its result and seeds the next open instantly"] = function()
+  child.lua([[
+    local util = require("sf.util")
+    TMP_CACHE_DIR = vim.fn.tempname() .. "/"
+    vim.fn.mkdir(TMP_CACHE_DIR, "p")
+    util.get_plugin_folder_path = function() return TMP_CACHE_DIR end
+
+    -- Swap the real "packages" view's fetch for a counting/delayable stub.
+    -- Its id stays "packages" -- what org_dashboard.lua's disk-cache
+    -- allowlist keys off -- so this exercises the real seed/persist code
+    -- path without needing to mock rest_api/session plumbing underneath.
+    _G.packages_fetch_count = 0
+    _G.packages_names = { "PkgOne", "PkgTwo" }
+    for _, view_desc in ipairs(dashboard_views) do
+      if view_desc.id == "packages" then
+        view_desc.fetch = function(_, callback)
+          _G.packages_fetch_count = _G.packages_fetch_count + 1
+          local name = _G.packages_names[_G.packages_fetch_count] or "PkgOther"
+          -- First call resolves ~immediately; the second (background,
+          -- post-reopen) call is deliberately slower so the test can
+          -- observe the seeded/stale paint before it lands.
+          local delay = _G.packages_fetch_count == 1 and 0 or 200
+          vim.defer_fn(function()
+            callback({
+              {
+                SubscriberPackage = { Name = name, NamespacePrefix = vim.NIL },
+                SubscriberPackageVersion = { MajorVersion = 1, MinorVersion = 0 },
+              },
+            }, nil)
+          end, delay)
+        end
+      end
+    end
+
+    records = {
+      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+    }
+
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  local buffer_has = function(needle)
+    return child.lua(string.format(
+      [[
+      for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.bo[buf].filetype == "SfOrgDashboard" then
+          local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+          for _, line in ipairs(lines) do
+            if line:find(%q, 1, true) then
+              return true
+            end
+          end
+        end
+      end
+      return false
+    ]],
+      needle
+    ))
+  end
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("p")]])
+  child.lua([[vim.wait(80, function() return false end, 50)]])
+
+  -- First-ever fetch: no disk cache yet, real fetch lands, result shown.
+  eq(child.lua_get([[_G.packages_fetch_count]]), 1)
+  eq(buffer_has("PkgOne"), true)
+
+  -- Close and reopen (fresh session.cache) to simulate the dashboard being
+  -- opened again -- "packages.json" is now on disk from the fetch above.
+  child.lua([[vim.api.nvim_input("q")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  child.lua([[dashboard.open(records, { prompt = "Orgs" })]])
+  -- Reopening alone (via its own cursor-landed prefetch) already seeds
+  -- "org1:packages" from disk and kicks off the (200ms-delayed) real
+  -- fetch; switching tabs just makes it the painted view.
+  child.lua([[vim.api.nvim_input("p")]])
+  child.lua([[vim.wait(20, function() return false end, 20)]])
+
+  -- Well before the stubbed 200ms background fetch resolves: last
+  -- session's data is already on screen, seeded straight from disk.
+  eq(buffer_has("PkgOne"), true)
+  eq(buffer_has("PkgTwo"), false)
+
+  -- Once the background refresh lands, the pane updates and disk is
+  -- re-persisted with the fresh result.
+  child.lua([[vim.wait(250, function() return false end, 50)]])
+  eq(child.lua_get([[_G.packages_fetch_count]]), 2)
+  eq(buffer_has("PkgTwo"), true)
+end
+
+test_set["disk cache: a failed background refresh keeps showing the seeded data instead of blanking to an error"] = function()
+  child.lua([[
+    local util = require("sf.util")
+    TMP_CACHE_DIR = vim.fn.tempname() .. "/"
+    vim.fn.mkdir(TMP_CACHE_DIR, "p")
+    util.get_plugin_folder_path = function() return TMP_CACHE_DIR end
+    util.write_cache_json("dashboard_org1_packages.json", {
+      {
+        SubscriberPackage = { Name = "SeededPkg", NamespacePrefix = vim.NIL },
+        SubscriberPackageVersion = { MajorVersion = 1, MinorVersion = 0 },
+      },
+    })
+
+    for _, view_desc in ipairs(dashboard_views) do
+      if view_desc.id == "packages" then
+        view_desc.fetch = function(_, callback)
+          vim.schedule(function()
+            callback(nil, "boom: org unreachable")
+          end)
+        end
+      end
+    end
+
+    records = {
+      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+    }
+
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("p")]])
+  child.lua([[vim.wait(80, function() return false end, 50)]])
+
+  local found = child.lua([[
+    _G.has_seed, _G.has_error = false, false
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.bo[buf].filetype == "SfOrgDashboard" then
+        local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+        for _, line in ipairs(lines) do
+          if line:find("SeededPkg", 1, true) then
+            _G.has_seed = true
+          end
+          if line:find("Failed to load", 1, true) then
+            _G.has_error = true
+          end
+        end
+      end
+    end
+    return { seed = _G.has_seed, err = _G.has_error }
+  ]])
+
+  eq(found.seed, true)
+  eq(found.err, false)
+end
+
+test_set["CR on logs tab: downloads scoped to that org's alias, opens the log, and closes the dashboard"] = function()
+  child.sf_setup()
+  child.go_to_sf_dir() -- util.get_sf_root() (used to build the download dir) needs a real sf project root
+  local windows_before = child.lua_get([[#vim.api.nvim_list_wins()]])
+
+  child.lua([[
+    Org = require("sf.org")
+    util = require("sf.util")
+    -- A different alias than the one being browsed -- proves the download
+    -- is scoped to the browsed org, not whatever target_org happens to be.
+    util.target_org = "some_other_org"
+
+    Org.list_org_logs = function(alias, callback)
+      vim.schedule(function()
+        callback({ { id = "07L1", user = "u", start_time = "2024-01-01T00:00:00", size = 100, status = "Success", operation = "Op" } }, nil)
+      end)
+    end
+
+    _G.download_args = nil
+    Org.download_log = function(log_id, dir, on_done, alias)
+      _G.download_args = { log_id = log_id, alias = alias, dir = dir }
+      on_done(dir .. log_id .. ".log")
+    end
+    _G.opened_path = nil
+    util.try_open_file = function(path)
+      _G.opened_path = path
+    end
+
+    records = {
+      { alias = "myorg", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  -- Switch to the logs tab.
+  child.lua([[vim.api.nvim_input("l")]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  -- Move the view pane's cursor onto the (only) log row, without ever
+  -- leaving the list window -- this is the path that used to silently do
+  -- nothing because <CR> was only bound on the view buffer.
+  child.lua([[vim.api.nvim_input("<Down>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  child.lua([[vim.api.nvim_input("<CR>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  local download_args = child.lua_get([[_G.download_args]])
+  eq(download_args.log_id, "07L1")
+  eq(download_args.alias, "myorg")
+  -- sfdx-conventional location, not the sf_cache plugin folder.
+  eq(download_args.dir:find(".sfdx/tools/debug/logs/", 1, true) ~= nil, true)
+  eq(download_args.dir:find("sf_cache", 1, true) == nil, true)
+  eq(child.lua_get([[_G.opened_path ~= nil]]), true)
+  -- Dashboard floats gone -- back to whatever window count there was
+  -- before `dashboard.open`, not stuck showing log text in the list pane.
+  eq(child.lua_get([[#vim.api.nvim_list_wins()]]), windows_before)
+end
+
+test_set["CR on logs tab: still works focused directly on the view buffer"] = function()
+  child.sf_setup()
+  child.go_to_sf_dir()
+  child.lua([[
+    Org = require("sf.org")
+    util = require("sf.util")
+
+    Org.list_org_logs = function(alias, callback)
+      vim.schedule(function()
+        callback({ { id = "07L2", user = "u", start_time = "2024-01-01T00:00:00", size = 100, status = "Success", operation = "Op" } }, nil)
+      end)
+    end
+
+    _G.download_args = nil
+    Org.download_log = function(log_id, dir, on_done, alias)
+      _G.download_args = { log_id = log_id, alias = alias }
+      on_done(dir .. log_id .. ".log")
+    end
+    util.try_open_file = function() end
+
+    records = {
+      { alias = "myorg", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("l")]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  child.lua([[
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.bo[vim.api.nvim_win_get_buf(win)].filetype == "SfOrgDashboard" and vim.wo[win].winbar ~= "" then
+        vim.api.nvim_set_current_win(win)
+      end
+    end
+    vim.api.nvim_input("<Down>")
+  ]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  child.lua([[vim.api.nvim_input("<CR>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  eq(child.lua_get([[_G.download_args.log_id]]), "07L2")
+end
+
+test_set["D on logs tab: downloads without opening or closing the dashboard, so multiple logs can be grabbed in a row"] = function()
+  child.sf_setup()
+  child.go_to_sf_dir()
+  child.lua([[
+    Org = require("sf.org")
+    util = require("sf.util")
+
+    Org.list_org_logs = function(alias, callback)
+      vim.schedule(function()
+        callback({ { id = "07L3", user = "u", start_time = "2024-01-01T00:00:00", size = 100, status = "Success", operation = "Op" } }, nil)
+      end)
+    end
+
+    _G.download_count = 0
+    Org.download_log = function(log_id, dir, on_done, alias)
+      _G.download_count = _G.download_count + 1
+      on_done(dir .. log_id .. ".log")
+    end
+    _G.open_count = 0
+    util.try_open_file = function()
+      _G.open_count = _G.open_count + 1
+    end
+
+    records = {
+      { alias = "myorg", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("l")]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("<Down>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  -- Press D twice -- both should download (no close in between), neither
+  -- should open the file.
+  child.lua([[vim.api.nvim_input("D")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  child.lua([[vim.api.nvim_input("D")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  eq(child.lua_get([[_G.download_count]]), 2)
+  eq(child.lua_get([[_G.open_count]]), 0)
+  -- Dashboard windows still there -- D must not close it.
+  local still_open = child.lua([[
+    local count = 0
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.bo[vim.api.nvim_win_get_buf(win)].filetype == "SfOrgDashboard" then
+        count = count + 1
+      end
+    end
+    return count
+  ]])
+  eq(still_open, 2)
+end
+
+test_set["navigate: opens a fresh dashboard positioned on the given org + tab"] = function()
+  child.lua([[
+    Org = require("sf.org")
+    Org.list_org_logs = function(alias, callback)
+      vim.schedule(function()
+        callback({}, nil)
+      end)
+      _G.fetched_alias = alias
+    end
+
+    records = {
+      { alias = "org1", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "org2", username = "user2", is_default = false, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+    }
+    dashboard.navigate(records, { prompt = "Orgs", view_id = "logs", alias = "org2" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  eq(child.lua_get([[#vim.api.nvim_list_wins() >= 2]]), true)
+  eq(child.lua_get([[_G.fetched_alias]]), "org2")
+end
+
+test_set["navigate: reuses an already-open session instead of stacking a second dashboard"] = function()
+  child.lua([[
+    Org = require("sf.org")
+    _G.fetched_aliases = {}
+    Org.list_org_logs = function(alias, callback)
+      table.insert(_G.fetched_aliases, alias)
+      vim.schedule(function()
+        callback({}, nil)
+      end)
+    end
+
+    records = {
+      { alias = "org1", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "org2", username = "user2", is_default = false, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  local windows_before = child.lua_get([[#vim.api.nvim_list_wins()]])
+
+  child.lua([[dashboard.navigate(records, { view_id = "logs", alias = "org2" })]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  local windows_after = child.lua_get([[#vim.api.nvim_list_wins()]])
+  eq(windows_after, windows_before)
+  eq(child.lua_get([[_G.fetched_aliases[#_G.fetched_aliases] ]]), "org2")
+end
+
 return test_set

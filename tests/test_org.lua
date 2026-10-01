@@ -136,6 +136,83 @@ end
 --   expect.error(function() child.lua([[M.get()]]) end)
 -- end
 
+T["with_orgs"] = new_set({
+  hooks = {
+    pre_case = function()
+      child.lua([[
+        H = M.__test
+        H.orgs = {}
+        util = require("sf.util")
+        util.show = function() end
+        util.show_err = function() end
+      ]])
+    end,
+  },
+})
+
+T["with_orgs"]["seeds from the on-disk snapshot instantly, then refreshes in the background"] = function()
+  child.lua([[
+    util.read_cache_json = function(file_name)
+      if file_name == H.ORG_LIST_CACHE_FILE then
+        return { { alias = "cached_org", username = "user@example.com" } }
+      end
+      return nil
+    end
+
+    -- Never calls on_done in this test -- only care that it was reached,
+    -- and that it was reached *after* fn already ran with the seeded data.
+    _G.background_fetch_started = false
+    H.fetch_org_list = function(_)
+      _G.background_fetch_started = true
+    end
+
+    _G.fn_called_with = nil
+    H.with_orgs(function()
+      _G.fn_called_with = vim.deepcopy(H.orgs)
+    end)
+  ]])
+
+  eq(child.lua_get([[_G.fn_called_with ~= nil]]), true)
+  eq(child.lua_get([[_G.fn_called_with[1].alias]]), "cached_org")
+  eq(child.lua_get([[_G.background_fetch_started]]), true)
+end
+
+T["with_orgs"]["falls back to a blocking fetch when there is no disk snapshot either"] = function()
+  child.lua([[
+    util.read_cache_json = function() return nil end
+
+    _G.fetch_called = false
+    H.fetch_org_list = function(on_done)
+      _G.fetch_called = true
+      H.orgs = { { alias = "fresh_org" } }
+      on_done()
+    end
+
+    _G.fn_called_with = nil
+    H.with_orgs(function()
+      _G.fn_called_with = vim.deepcopy(H.orgs)
+    end)
+  ]])
+
+  eq(child.lua_get([[_G.fetch_called]]), true)
+  eq(child.lua_get([[_G.fn_called_with[1].alias]]), "fresh_org")
+end
+
+T["with_orgs"]["already-populated helpers.orgs short-circuits both the disk read and the fetch"] = function()
+  child.lua([[
+    H.orgs = { { alias = "already_loaded" } }
+    util.read_cache_json = function() error("must not be called") end
+    H.fetch_org_list = function() error("must not be called") end
+
+    _G.fn_called_with = nil
+    H.with_orgs(function()
+      _G.fn_called_with = vim.deepcopy(H.orgs)
+    end)
+  ]])
+
+  eq(child.lua_get([[_G.fn_called_with[1].alias]]), "already_loaded")
+end
+
 T["mark_default"] = new_set({
   hooks = {
     pre_case = function()
@@ -753,6 +830,61 @@ T["diff_in_org"]["ignores nil choice (user canceled)"] = function()
     end
   ]])
   eq(child.lua_get([[_G.diff_called]]), false)
+end
+
+T["download_log"] = new_set()
+
+T["download_log"]["fetches the body via the Tooling API (scoped to the given alias) and writes it to disk"] = function()
+  child.lua([[
+    H = M.__test
+    rest_api = require("sf.sub.rest_api")
+
+    _G._session_alias = nil
+    rest_api.get_session = function(alias, cb)
+      _G._session_alias = alias
+      cb({ token = "tok", url = "https://x", api_version = "60.0" }, nil)
+    end
+
+    _G._body_log_id = nil
+    rest_api.download_log_body = function(session, log_id, cb)
+      _G._body_log_id = log_id
+      cb("13:46:23.0 (1)|EXECUTION_STARTED", nil)
+    end
+
+    _G._dir = vim.fn.tempname() .. "/"
+    _G._done_path = nil
+    H.download_log("07Lxyz", _G._dir, function(path)
+      _G._done_path = path
+    end, "myorg")
+  ]])
+
+  eq(child.lua_get([[_G._session_alias]]), "myorg")
+  eq(child.lua_get([[_G._body_log_id]]), "07Lxyz")
+  local done_path = child.lua_get([[_G._done_path]])
+  eq(done_path, child.lua_get([[_G._dir]]) .. "07Lxyz.log")
+  eq(child.lua_get([[vim.fn.filereadable(_G._done_path) == 1]]), true)
+  local written = child.lua_get([[table.concat(vim.fn.readfile(_G._done_path), "\n")]])
+  eq(written, "13:46:23.0 (1)|EXECUTION_STARTED")
+
+  child.lua([[vim.fn.delete(_G._dir, "rf")]])
+end
+
+T["download_log"]["does not call on_done when the session can't be resolved"] = function()
+  child.lua([[
+    H = M.__test
+    rest_api = require("sf.sub.rest_api")
+
+    rest_api.get_session = function(_, cb)
+      cb(nil, "no default org")
+    end
+
+    _G._on_done_called = false
+    H.download_log("07Lxyz", vim.fn.tempname() .. "/", function()
+      _G._on_done_called = true
+    end, "myorg")
+  ]])
+
+  eq(child.lua_get([[_G._on_done_called]]), false)
 end
 
 return T

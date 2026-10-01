@@ -26,8 +26,25 @@ function Org.diff_in_org()
 end
 
 function Org.open_dashboard()
+  Org.goto_dashboard("details")
+end
+
+--- Navigate the org dashboard to `view_id`, optionally for a specific org
+--- (`alias`, defaults to the current target_org). Fetches the org list
+--- first if it isn't cached yet, and opens the dashboard if it isn't
+--- already showing. This is the shared "jump to dashboard at X" entrypoint
+--- every other Sf.* function should route through instead of building its
+--- own dashboard-opening/fzf logic - the dashboard is meant to be the one
+--- view for org operations, not one of several parallel UIs.
+---@param view_id string a `sf.ui.dashboard_views` id (e.g. "details", "logs")
+---@param alias string|nil defaults to `util.target_org`
+function Org.goto_dashboard(view_id, alias)
   helpers.with_orgs(function()
-    require("sf.ui.org_dashboard").open(helpers.orgs, { prompt = "Org Dashboard" })
+    require("sf.ui.org_dashboard").navigate(helpers.orgs, {
+      prompt = "Org Dashboard",
+      view_id = view_id,
+      alias = alias or util.target_org,
+    })
   end)
 end
 
@@ -72,10 +89,11 @@ function Org.open_org(alias)
   helpers.open_org(alias)
 end
 
+--- Fetch and browse org logs for the current target_org: opens the org
+--- dashboard on its Logs tab (fetch/filter/download all live there already)
+--- instead of a separate one-shot fzf picker.
 function Org.pull_log()
-  helpers.pick_org_log(util.get_plugin_folder_path() .. "logs/", function(path)
-    util.try_open_file(path)
-  end)
+  Org.goto_dashboard("logs")
 end
 
 --- List logs from an org (identified by alias) and call the callback with the parsed list.
@@ -112,8 +130,10 @@ end
 --- @param log_id string
 --- @param dir string
 --- @param on_done fun(path: string)
-function Org.download_log(log_id, dir, on_done)
-  helpers.download_log(log_id, dir, on_done)
+--- @param alias string|nil org alias to scope the download to; defaults to
+---   `util.target_org` (CommandBuilder's own default) when omitted
+function Org.download_log(log_id, dir, on_done, alias)
+  helpers.download_log(log_id, dir, on_done, alias)
 end
 
 -- helpers;
@@ -121,20 +141,42 @@ end
 ---@param log_id string
 ---@param dir string
 ---@param on_done fun(path: string)
-helpers.download_log = function(log_id, dir, on_done)
+---@param alias string|nil org alias to scope the download to (see
+---   `Org.download_log`) - the dashboard passes the alias of whichever
+---   org's logs tab is on screen, so downloading while browsing a
+---   non-default org fetches from THAT org, not whatever the global
+---   target_org happens to be. Defaults to `util.target_org` when omitted.
+helpers.download_log = function(log_id, dir, on_done, alias)
   if vim.fn.isdirectory(dir) == 0 then
     vim.fn.mkdir(dir, "-p")
   end
-  util.show("Downloading log...")
-  local get_cmd = cmd_builder:new()
-      :cmd("apex")
-      :act("get")
-      :subact("log")
-      :addParams("-i", log_id)
-      :addParams("-d", dir)
-      :buildAsTable()
-  util.silent_system_call(get_cmd, nil, "Failed to get logs from org", function()
-    on_done(dir .. log_id .. ".log")
+
+  -- Tooling API `ApexLog/<id>/Body` directly, instead of shelling out to
+  -- `sf apex get log` -- one HTTP call instead of a whole CLI/Node startup.
+  local rest_api = require("sf.sub.rest_api")
+  local handle = require("sf.ui.progress").start({ msg = "Downloading log..." })
+
+  rest_api.get_session(alias, function(session, session_err)
+    if not session then
+      return handle:finish(false, "sf.nvim: " .. (session_err or "failed to resolve org session"))
+    end
+
+    rest_api.download_log_body(session, log_id, function(body, body_err)
+      if not body then
+        return handle:finish(false, "sf.nvim: failed to download log: " .. (body_err or "unknown error"))
+      end
+
+      local path = dir .. log_id .. ".log"
+      local file, open_err = io.open(path, "w")
+      if not file then
+        return handle:finish(false, "sf.nvim: failed to write " .. path .. (open_err and (": " .. open_err) or ""))
+      end
+      file:write(body)
+      file:close()
+
+      handle:finish(true, "sf.nvim: log downloaded")
+      on_done(path)
+    end)
   end)
 end
 
@@ -260,6 +302,7 @@ helpers.pick_org_log = function(dir, on_done)
 end
 
 helpers.orgs = {} -- array of { alias, username, is_scratch, is_sandbox, is_prod, is_default, expiration_date }
+helpers.ORG_LIST_CACHE_FILE = "orgs.json" -- last-known-good snapshot; see store_orgs/with_orgs
 
 --- Open a specific org (not necessarily the target_org) in the browser.
 ---@param alias string
@@ -353,6 +396,25 @@ end
 helpers.with_orgs = function(fn)
   if not vim.tbl_isempty(helpers.orgs) then
     return fn()
+  end
+
+  -- Cold start: seed from last session's snapshot (if any) so `fn` (e.g.
+  -- opening the dashboard) runs immediately instead of blocking on `sf org
+  -- list`, then refresh for real in the background. helpers.orgs is
+  -- mutated in place by store_orgs, so anything already holding a
+  -- reference to it (the dashboard's left pane) picks up the refresh too --
+  -- it just needs telling to repaint, hence the org_dashboard call below.
+  local cached_orgs = util.read_cache_json(helpers.ORG_LIST_CACHE_FILE)
+  if cached_orgs and #cached_orgs > 0 then
+    for _, record in ipairs(cached_orgs) do
+      table.insert(helpers.orgs, record)
+    end
+    Org.refresh_target_org_from_disk()
+    fn()
+    helpers.fetch_org_list(function()
+      require("sf.ui.org_dashboard").refresh_list()
+    end)
+    return
   end
 
   util.show("Fetching org list...")
@@ -452,6 +514,11 @@ helpers.store_orgs = function(data)
   -- statusline's org from disk instead, now that `helpers.orgs` has metadata to
   -- match the alias against.
   Org.refresh_target_org_from_disk()
+
+  -- Snapshot for next session: `with_orgs` seeds instantly from this on a
+  -- cold start instead of blocking on `sf org list` before it can even
+  -- open the dashboard, then refreshes for real in the background.
+  util.write_cache_json(helpers.ORG_LIST_CACHE_FILE, helpers.orgs)
 end
 
 -- Coalescing-only cache (ttl_seconds = 0, the default) for `sf org list`:
