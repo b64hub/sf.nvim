@@ -461,8 +461,12 @@ function dashboard.open(records, opts)
       return
     end
 
-    -- Already fetching: don't start another fetch
+    -- Already fetching (e.g. a background prefetch beat us to it) and no
+    -- data/seed to show yet: paint now so the spinner replaces whatever the
+    -- previous tab left on screen, instead of leaving stale content up
+    -- until this fetch happens to land. Don't start another fetch.
     if cached and cached.fetching then
+      paint_view(record, 0)
       return
     end
 
