@@ -76,7 +76,7 @@ H.retrieve_md = function(type, name, cb)
 
   local type_name = string.format("%s:%s", type, name)
   local cmd = B:new():cmd("project"):act("retrieve start"):addParamsNoExpand("-m", type_name):build()
-  T.run(cmd, cb, { label = "Retrieve " .. type_name, category = "retrieve" })
+  T.run(cmd, cb, { label = "Retrieve " .. type_name .. " ← " .. U.target_org, category = "retrieve" })
 end
 
 H.list_md_to_retrieve = function()
@@ -213,7 +213,7 @@ H.retrieve_md_type = function(type)
 
   -- local cmd = string.format('sf project retrieve start -m \'%s:*\' -o %s', type, U.target_org)
   local cmd = B:new():cmd("project"):act("retrieve start"):addParams("-m", type):build()
-  T.run(cmd, nil, { label = "Retrieve " .. type, category = "retrieve" })
+  T.run(cmd, nil, { label = "Retrieve " .. type .. " ← " .. U.target_org, category = "retrieve" })
 end
 
 ---@param name string
@@ -402,7 +402,7 @@ H.rename_apex_impl = function(old_file_path, old_name, new_name)
 
       U.show("Deleting old class '" .. old_name .. "'...")
       H.delete_old_class_after_rename(old_name)
-    end, { label = "Deploy " .. new_name, category = "deploy" })
+    end, { label = "Deploy " .. new_name .. " → " .. U.target_org, category = "deploy" })
   end)
 end
 
