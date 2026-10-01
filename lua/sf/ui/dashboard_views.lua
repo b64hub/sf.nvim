@@ -408,9 +408,12 @@ local function flatten_package_row(raw_record)
   local namespace = as_string_field(subscriber_package.NamespacePrefix) or "unmanaged"
   local major = as_number_field(package_version.MajorVersion)
   local minor = as_number_field(package_version.MinorVersion)
+  local patch = as_number_field(package_version.PatchVersion)
 
   local version
-  if major ~= nil and minor ~= nil then
+  if major ~= nil and minor ~= nil and patch ~= nil then
+    version = string.format("%d.%d.%d", major, minor, patch)
+  elseif major ~= nil and minor ~= nil then
     version = string.format("%d.%d", major, minor)
   else
     version = "unknown"
@@ -696,7 +699,7 @@ local views = {
           return callback(nil, err)
         end
         local soql =
-          "SELECT SubscriberPackage.Name, SubscriberPackage.NamespacePrefix, SubscriberPackageVersion.MajorVersion, SubscriberPackageVersion.MinorVersion FROM InstalledSubscriberPackage"
+          "SELECT SubscriberPackage.Name, SubscriberPackage.NamespacePrefix, SubscriberPackageVersion.MajorVersion, SubscriberPackageVersion.MinorVersion, SubscriberPackageVersion.PatchVersion FROM InstalledSubscriberPackage"
         rest_api.query(session, soql, function(records, query_err)
           if not records then
             return callback(nil, query_err)
@@ -721,9 +724,17 @@ local views = {
         highlight = "SfTableHeader",
       })
 
-      -- Build data rows
+      -- Build data rows, alphabetically by package name (case-insensitive)
+      -- so the list doesn't just reflect whatever order the org's Tooling
+      -- API query happened to return.
+      local flattened_rows = {}
       for _, raw_record in ipairs(data) do
-        local flattened = flatten_package_row(raw_record)
+        table.insert(flattened_rows, flatten_package_row(raw_record))
+      end
+      table.sort(flattened_rows, function(left, right)
+        return left.name:lower() < right.name:lower()
+      end)
+      for _, flattened in ipairs(flattened_rows) do
         table.insert(col_rows, {
           cells = { flattened.name, flattened.namespace, flattened.version },
           highlight = nil,
