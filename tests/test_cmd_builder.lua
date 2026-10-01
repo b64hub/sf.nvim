@@ -173,5 +173,14 @@ T["setup()"]["localOnly() by-passes the org param"] = function()
   eq(result, expected)
 end
 
+T["setup()"]["matches Term.save_and_push's default push command (bare -c flag alongside a value param)"] = function()
+  child.open_in_sf_dir("test.txt")
+  local file_path = child.lua_get('vim.fn.expandcmd("%:p")')
+  local result =
+    child.lua_get('B:new():cmd("project"):act("deploy start"):addParams("-d", "%:p"):addParams("-c"):build()')
+  local expected = string.format('sf project deploy start -d "%s" -c -o "t_org"', file_path)
+
+  eq(result, expected)
+end
 
 return T

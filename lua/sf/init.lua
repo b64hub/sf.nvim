@@ -41,9 +41,11 @@ Sf.refresh_current_file_covered_percent = Test.refresh_current_file_covered_perc
 Sf.toggle_term = Term.toggle
 
 --- Save the file in the current buffer and push to target_org.
---- Accepts one string parameter to add extra parameters.
---- For example, to add `-c` parameter, you can define hotkey as:
---- vim.keymap.set('n', '<leader>sg', require('sf').save_and_push('-c') end, { desc = 'custom key' })
+--- Always passes `-c`/`--ignore-conflicts` (a conflict just means the org
+--- copy's timestamp moved since the last retrieve; pushing what's in the
+--- buffer is almost always what you want).
+--- Accepts one string parameter to add extra parameters, e.g.:
+--- vim.keymap.set('n', '<leader>sg', require('sf').save_and_push('--verbose') end, { desc = 'custom key' })
 Sf.save_and_push = Term.save_and_push
 
 --- Run `sf project deploy start` against the target_org

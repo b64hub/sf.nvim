@@ -32,7 +32,11 @@ function Term.save_and_push(extra_params)
 
   vim.api.nvim_command("write!")
 
-  local builder = cmd_builder:new():cmd("project"):act("deploy start"):addParams("-d", "%:p")
+  -- `-c`/`--ignore-conflicts`: a conflict here just means the org copy's
+  -- timestamp moved since the last retrieve (e.g. someone else deployed
+  -- meanwhile) - pushing the file you're looking at is almost always what
+  -- you want, so skip the prompt by default instead of blocking the push.
+  local builder = cmd_builder:new():cmd("project"):act("deploy start"):addParams("-d", "%:p"):addParams("-c")
   if extra_params then
     builder:addParamStr(extra_params)
   end
