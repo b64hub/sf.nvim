@@ -53,9 +53,35 @@ function dashboard.handle_tab_click(minwid, clicks, button, modifiers)
   end
 end
 
+--- Navigate to `opts.view_id` (optionally for `opts.alias`), reusing the
+--- dashboard session if one is already open instead of stacking a second
+--- pair of floats, opening a fresh one otherwise. This is the one
+--- entrypoint every "jump to dashboard at X" keymap/command should call -
+--- see `sf.org`'s `Org.goto_dashboard` for the higher-level wrapper that
+--- also resolves the org list first.
+---@param records table[] org records, same shape `dashboard.open` takes;
+---  only used when a new session needs to be created
+---@param opts table { prompt = string|nil, view_id = string|nil, alias = string|nil }
+function dashboard.navigate(records, opts)
+  opts = opts or {}
+
+  if active_session and vim.api.nvim_win_is_valid(active_session.list_window) then
+    if opts.alias then
+      active_session.select_alias(opts.alias)
+    end
+    if opts.view_id then
+      active_session.switch_view(opts.view_id)
+    end
+    vim.api.nvim_set_current_win(active_session.list_window)
+    return
+  end
+
+  dashboard.open(records, { prompt = opts.prompt, initial_view_id = opts.view_id, initial_alias = opts.alias })
+end
+
 --- Open a split-pane dashboard showing orgs on the left, details on the right.
 ---@param records table[] org records (alias, username, is_scratch, is_sandbox, is_prod, is_default, is_default_devhub, expiration_date)
----@param opts table { prompt = string }
+---@param opts table { prompt = string, initial_view_id = string|nil, initial_alias = string|nil }
 function dashboard.open(records, opts)
   if #records == 0 then
     return vim.notify("Sf: no orgs available. Run :SF org fetchList first.", vim.log.levels.WARN)
@@ -90,7 +116,7 @@ function dashboard.open(records, opts)
     list_window = nil,
     view_buffer = view_buffer,
     view_window = nil,
-    active_view_id = "details", -- which view to show
+    active_view_id = opts.initial_view_id or "details", -- which view to show
     cache = {}, -- key = "alias:view_id", value = { data = ..., fetching = bool }
     generation = 0, -- bumped on state changes; guards stale async results
     spinner_timer = nil,
@@ -114,6 +140,10 @@ function dashboard.open(records, opts)
     local parts = {}
     for _, view_desc in ipairs(dashboard_views.action_views("right")) do
       table.insert(parts, view_desc.key .. " " .. view_desc.label)
+    end
+    if session.active_view_id == "logs" then
+      table.insert(parts, "<CR> open")
+      table.insert(parts, "D download")
     end
     table.insert(parts, "f filter")
     table.insert(parts, "r refresh")
@@ -186,6 +216,25 @@ function dashboard.open(records, opts)
   session.list_window = list_window
   session.view_window = view_window
   active_session = session
+
+  -- Move the list cursor onto `alias`'s row, if found; no-op otherwise
+  -- (leaves the cursor wherever it already was). Shared by the initial-
+  -- open jump below and `session.select_alias` (used to jump an
+  -- already-open session, e.g. from `dashboard.navigate`).
+  local jump_to_alias = function(alias)
+    for row, record in ipairs(records) do
+      if record.alias == alias then
+        vim.api.nvim_win_set_cursor(list_window, { row, 0 })
+        return
+      end
+    end
+  end
+
+  -- e.g. so `Org.goto_dashboard("logs")` lands on the current target_org's
+  -- row instead of whatever happens to render first.
+  if opts.initial_alias then
+    jump_to_alias(opts.initial_alias)
+  end
 
   vim.wo[list_window].cursorline = true
   -- Normally off (the view pane is a read-only display, not navigated) --
@@ -617,27 +666,67 @@ function dashboard.open(records, opts)
     scroll_view_pane("k")
   end, { buffer = session.list_buffer, nowait = true })
 
-  -- Download log on <CR> -- bound on the VIEW buffer, not the list buffer:
-  -- the list buffer's cursor row indexes into `records` (which org), not
-  -- into `session.filtered_logs` (which log). A user downloads a specific
-  -- log by moving focus into the view pane (e.g. <C-w>w) and placing the
-  -- cursor on that log's line, so nvim_win_get_cursor(session.view_window)
-  -- is only meaningful there.
+  -- Download the log under the cursor in the view pane's logs table.
+  -- The cursor read is always `session.view_window`'s (that's what indexes
+  -- into `session.filtered_logs`, not `records`), but the keymap itself is
+  -- bound on BOTH buffers: the shared <Up>/<Down> handlers above already
+  -- move the view pane's cursor without switching window focus away from
+  -- the list, so a user picks a log with plain <Down>/<Up> and hits <CR>
+  -- without ever needing <C-w>w - view-buffer-only left that common path
+  -- silently doing nothing.
   -- Row 1 is the logs table's header (see dashboard_views.lua's logs
   -- view), so it's offset by one from `session.filtered_logs`.
-  vim.keymap.set("n", "<CR>", function()
+  ---@param opts table { open = boolean, close = boolean }
+  local download_selected_log = function(opts)
     if session.active_view_id ~= "logs" then
       return
     end
     local view_row = vim.api.nvim_win_get_cursor(session.view_window)[1] - 1
-    if view_row > 0 and view_row <= #session.filtered_logs then
-      local log_record = session.filtered_logs[view_row]
-      local log_dir = util.get_plugin_folder_path() .. "logs/"
-      Org.download_log(log_record.id, log_dir, function(path)
-        util.try_open_file(path)
-      end)
+    if view_row <= 0 or view_row > #session.filtered_logs then
+      return
     end
-  end, { buffer = session.view_buffer, nowait = true })
+    local record = current_record()
+    if not record then
+      return
+    end
+    local log_record = session.filtered_logs[view_row]
+    -- sfdx-conventional location, not the sf_cache plugin folder -- same
+    -- place the replay debugger's local-log picker already looks, so a log
+    -- downloaded here is immediately pickable for replay debugging too.
+    local log_dir = util.get_sf_root() .. ".sfdx/tools/debug/logs/"
+
+    -- Close *before* kicking off the download/open: the dashboard's list
+    -- and view panes are minimal floats, not meant to host a real file --
+    -- `util.try_open_file` does `:e!` in the current window, so closing
+    -- first leaves the editor's own window current for it to land in,
+    -- instead of clobbering the org list pane with log text.
+    if opts.close then
+      close()
+    end
+
+    -- Scoped to `record.alias`, not whatever the global target_org happens
+    -- to be: without this, downloading while browsing a non-default org's
+    -- logs tab silently fetched from the wrong org.
+    Org.download_log(log_record.id, log_dir, function(path)
+      if opts.open then
+        util.try_open_file(path)
+      end
+    end, record.alias)
+  end
+
+  -- <CR>: download + open + close (you're done browsing, you want to read
+  -- this one log). D (capital -- lowercase "d" is already the "details"
+  -- tab shortcut, registered below): download only, dashboard stays open,
+  -- so multiple logs can be grabbed in one go without reopening the
+  -- dashboard each time.
+  for _, buffer in ipairs({ session.list_buffer, session.view_buffer }) do
+    vim.keymap.set("n", "<CR>", function()
+      download_selected_log({ open = true, close = true })
+    end, { buffer = buffer, nowait = true })
+    vim.keymap.set("n", "D", function()
+      download_selected_log({ open = false, close = false })
+    end, { buffer = buffer, nowait = true })
+  end
 
   -- Bind view selection keys and action keys
   for _, view_desc in ipairs(dashboard_views) do
@@ -666,6 +755,14 @@ function dashboard.open(records, opts)
   session.current_record = current_record
   session.repaint_list = repaint_list
   session.update_tab_strip = update_tab_strip
+  session.switch_view = tab_switch_body
+  -- Used by `dashboard.navigate` to jump an already-open session to a
+  -- given org: move the list cursor onto that alias's row, then re-run the
+  -- same fetch+render `on_cursor_move` does for any other cursor move.
+  session.select_alias = function(alias)
+    jump_to_alias(alias)
+    on_cursor_move()
+  end
 
   -- Initialize the winbar with the current tab strip
   update_tab_strip()

@@ -1184,4 +1184,216 @@ test_set["disk cache: a failed background refresh keeps showing the seeded data 
   eq(found.err, false)
 end
 
+test_set["CR on logs tab: downloads scoped to that org's alias, opens the log, and closes the dashboard"] = function()
+  child.sf_setup()
+  child.go_to_sf_dir() -- util.get_sf_root() (used to build the download dir) needs a real sf project root
+  local windows_before = child.lua_get([[#vim.api.nvim_list_wins()]])
+
+  child.lua([[
+    Org = require("sf.org")
+    util = require("sf.util")
+    -- A different alias than the one being browsed -- proves the download
+    -- is scoped to the browsed org, not whatever target_org happens to be.
+    util.target_org = "some_other_org"
+
+    Org.list_org_logs = function(alias, callback)
+      vim.schedule(function()
+        callback({ { id = "07L1", user = "u", start_time = "2024-01-01T00:00:00", size = 100, status = "Success", operation = "Op" } }, nil)
+      end)
+    end
+
+    _G.download_args = nil
+    Org.download_log = function(log_id, dir, on_done, alias)
+      _G.download_args = { log_id = log_id, alias = alias, dir = dir }
+      on_done(dir .. log_id .. ".log")
+    end
+    _G.opened_path = nil
+    util.try_open_file = function(path)
+      _G.opened_path = path
+    end
+
+    records = {
+      { alias = "myorg", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  -- Switch to the logs tab.
+  child.lua([[vim.api.nvim_input("l")]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  -- Move the view pane's cursor onto the (only) log row, without ever
+  -- leaving the list window -- this is the path that used to silently do
+  -- nothing because <CR> was only bound on the view buffer.
+  child.lua([[vim.api.nvim_input("<Down>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  child.lua([[vim.api.nvim_input("<CR>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  local download_args = child.lua_get([[_G.download_args]])
+  eq(download_args.log_id, "07L1")
+  eq(download_args.alias, "myorg")
+  -- sfdx-conventional location, not the sf_cache plugin folder.
+  eq(download_args.dir:find(".sfdx/tools/debug/logs/", 1, true) ~= nil, true)
+  eq(download_args.dir:find("sf_cache", 1, true) == nil, true)
+  eq(child.lua_get([[_G.opened_path ~= nil]]), true)
+  -- Dashboard floats gone -- back to whatever window count there was
+  -- before `dashboard.open`, not stuck showing log text in the list pane.
+  eq(child.lua_get([[#vim.api.nvim_list_wins()]]), windows_before)
+end
+
+test_set["CR on logs tab: still works focused directly on the view buffer"] = function()
+  child.sf_setup()
+  child.go_to_sf_dir()
+  child.lua([[
+    Org = require("sf.org")
+    util = require("sf.util")
+
+    Org.list_org_logs = function(alias, callback)
+      vim.schedule(function()
+        callback({ { id = "07L2", user = "u", start_time = "2024-01-01T00:00:00", size = 100, status = "Success", operation = "Op" } }, nil)
+      end)
+    end
+
+    _G.download_args = nil
+    Org.download_log = function(log_id, dir, on_done, alias)
+      _G.download_args = { log_id = log_id, alias = alias }
+      on_done(dir .. log_id .. ".log")
+    end
+    util.try_open_file = function() end
+
+    records = {
+      { alias = "myorg", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("l")]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  child.lua([[
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.bo[vim.api.nvim_win_get_buf(win)].filetype == "SfOrgDashboard" and vim.wo[win].winbar ~= "" then
+        vim.api.nvim_set_current_win(win)
+      end
+    end
+    vim.api.nvim_input("<Down>")
+  ]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  child.lua([[vim.api.nvim_input("<CR>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  eq(child.lua_get([[_G.download_args.log_id]]), "07L2")
+end
+
+test_set["D on logs tab: downloads without opening or closing the dashboard, so multiple logs can be grabbed in a row"] = function()
+  child.sf_setup()
+  child.go_to_sf_dir()
+  child.lua([[
+    Org = require("sf.org")
+    util = require("sf.util")
+
+    Org.list_org_logs = function(alias, callback)
+      vim.schedule(function()
+        callback({ { id = "07L3", user = "u", start_time = "2024-01-01T00:00:00", size = 100, status = "Success", operation = "Op" } }, nil)
+      end)
+    end
+
+    _G.download_count = 0
+    Org.download_log = function(log_id, dir, on_done, alias)
+      _G.download_count = _G.download_count + 1
+      on_done(dir .. log_id .. ".log")
+    end
+    _G.open_count = 0
+    util.try_open_file = function()
+      _G.open_count = _G.open_count + 1
+    end
+
+    records = {
+      { alias = "myorg", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("l")]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("<Down>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  -- Press D twice -- both should download (no close in between), neither
+  -- should open the file.
+  child.lua([[vim.api.nvim_input("D")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  child.lua([[vim.api.nvim_input("D")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  eq(child.lua_get([[_G.download_count]]), 2)
+  eq(child.lua_get([[_G.open_count]]), 0)
+  -- Dashboard windows still there -- D must not close it.
+  local still_open = child.lua([[
+    local count = 0
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.bo[vim.api.nvim_win_get_buf(win)].filetype == "SfOrgDashboard" then
+        count = count + 1
+      end
+    end
+    return count
+  ]])
+  eq(still_open, 2)
+end
+
+test_set["navigate: opens a fresh dashboard positioned on the given org + tab"] = function()
+  child.lua([[
+    Org = require("sf.org")
+    Org.list_org_logs = function(alias, callback)
+      vim.schedule(function()
+        callback({}, nil)
+      end)
+      _G.fetched_alias = alias
+    end
+
+    records = {
+      { alias = "org1", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "org2", username = "user2", is_default = false, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+    }
+    dashboard.navigate(records, { prompt = "Orgs", view_id = "logs", alias = "org2" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  eq(child.lua_get([[#vim.api.nvim_list_wins() >= 2]]), true)
+  eq(child.lua_get([[_G.fetched_alias]]), "org2")
+end
+
+test_set["navigate: reuses an already-open session instead of stacking a second dashboard"] = function()
+  child.lua([[
+    Org = require("sf.org")
+    _G.fetched_aliases = {}
+    Org.list_org_logs = function(alias, callback)
+      table.insert(_G.fetched_aliases, alias)
+      vim.schedule(function()
+        callback({}, nil)
+      end)
+    end
+
+    records = {
+      { alias = "org1", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "org2", username = "user2", is_default = false, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  local windows_before = child.lua_get([[#vim.api.nvim_list_wins()]])
+
+  child.lua([[dashboard.navigate(records, { view_id = "logs", alias = "org2" })]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  local windows_after = child.lua_get([[#vim.api.nvim_list_wins()]])
+  eq(windows_after, windows_before)
+  eq(child.lua_get([[_G.fetched_aliases[#_G.fetched_aliases] ]]), "org2")
+end
+
 return test_set

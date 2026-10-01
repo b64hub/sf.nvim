@@ -146,4 +146,23 @@ test_set["setup: status groups derive from accent"] = function()
   eq(prod_hl.fg ~= scratch_hl.fg, true)
 end
 
+test_set["setup: ui.colors.prod/sandbox/scratch override the accent-derived default"] = function()
+  child.lua([[
+    vim.g.sf = { ui = { accent = "#1B96FF", colors = { prod = "#FF0000" } } }
+    highlights = require("sf.ui.highlights")
+    highlights.setup()
+    prod_hl = vim.api.nvim_get_hl(0, { name = "SfStatusProd" })
+    sandbox_hl = vim.api.nvim_get_hl(0, { name = "SfStatusSandbox" })
+  ]])
+
+  local prod_hl = child.lua_get([[prod_hl ]])
+  local sandbox_hl = child.lua_get([[sandbox_hl ]])
+
+  -- Explicit override wins...
+  eq(string.format("#%06x", prod_hl.fg), "#ff0000")
+  -- ...but an unset color still inherits the accent-derived default instead
+  -- of e.g. going nil/invisible.
+  eq(sandbox_hl.fg ~= nil, true)
+end
+
 return test_set

@@ -81,6 +81,7 @@ T["setup()"]["has default config"] = function()
   })
   expect_config("ui", {
     accent = "#1B96FF",
+    colors = {},
     border = "rounded",
     icons = true,
     terminal = {

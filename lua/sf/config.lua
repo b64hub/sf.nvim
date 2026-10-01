@@ -59,7 +59,19 @@ local default_cfg = {
 
   -- Restyled UI: float border/accent color and default terminal position.
   ui = {
-    accent = "#1B96FF", -- bright "Salesforce blue"; used for border & title
+    accent = "#1B96FF", -- bright "Salesforce blue"; used for border, title,
+    -- and (unless overridden below) every org-type cloud/status color.
+
+    -- Per-org-type cloud/status colors (dashboard org list, statusline).
+    -- Each defaults to a shade of `accent` above when left nil, so most
+    -- setups only need to touch `accent`; set any of these to break that
+    -- one org type out onto its own color instead.
+    colors = {
+      prod = nil, -- defaults to `accent` (bold)
+      sandbox = nil, -- defaults to a lightened tint of `accent`
+      scratch = nil, -- defaults to a muted/darkened shade of `accent`
+    },
+
     border = "rounded",
     icons = true, -- set false if you don't have a Nerd Font
     terminal = {
@@ -141,11 +153,12 @@ local default_cfg = {
     -- given (Salesforce caps TraceFlag duration at 24h regardless).
     trace_flag_hours = 1,
     -- where `replay_debug_local_log` looks for logs: entries starting with "/"
-    -- are absolute, "<plugin_folder>" resolves to the plugin cache dir,
-    -- anything else is relative to the sf project root.
+    -- are absolute, "<plugin_folder>" resolves to the plugin cache dir
+    -- (not used by default - sf.nvim downloads logs to the sfdx-conventional
+    -- path below, not the plugin cache folder), anything else is relative
+    -- to the sf project root.
     log_globs = {
       ".sfdx/tools/debug/**/*.log",
-      "<plugin_folder>/logs/*.log",
     },
   },
 

@@ -4,13 +4,13 @@
 -- `logFileContents` (this adapter version does not read the log itself, see
 -- docs/replay-debugger-notes.md).
 
-local U = require("sf.util")
+local util = require("sf.util")
 local Api = require("sf.sub.rest_api")
 
 local Debug = {}
-local H = {}
+local helpers = {}
 
-local DEBUG_LEVEL_NAME = "SFNVIM_REPLAY"
+local DEBUG_LEVEL_NAME = "ReplayDebuggerLevels"
 
 --- @return table
 local function cfg()
@@ -19,9 +19,9 @@ end
 
 --- Find the "apexReplayDebug.js" adapter entry point.
 --- @return string|nil
-H.resolve_adapter_path = function()
+helpers.resolve_adapter_path = function()
   local c = cfg()
-  if not U.is_empty_str(c.adapter_path) then
+  if not util.is_empty_str(c.adapter_path) then
     return c.adapter_path
   end
 
@@ -46,7 +46,7 @@ H.resolve_adapter_path = function()
   end
 
   for _, path in ipairs(candidates) do
-    if U.file_readable(path) then
+    if util.file_readable(path) then
       return path
     end
   end
@@ -57,7 +57,7 @@ end
 --- Ask apex_ls for the valid breakpoint lines per Apex type, required by the
 --- adapter's `launch` request as `lineBreakpointInfo`.
 --- @param cb fun(info: table[]|nil, err: string|nil)
-H.fetch_line_breakpoint_info = function(cb)
+helpers.fetch_line_breakpoint_info = function(cb)
   local clients = vim.lsp.get_clients({ name = "apex_ls" })
   if #clients == 0 then
     return cb(nil, "apex_ls not running - open a .cls file first")
@@ -90,9 +90,9 @@ H.fetch_line_breakpoint_info = function(cb)
         )
       end
 
-      result = H.filter_ignored(result)
-      H.cache = result
-      H.write_cache(result)
+      result = helpers.filter_ignored(result)
+      helpers.cache = result
+      helpers.write_cache(result)
       cb(result, nil)
     end)
   end)
@@ -104,7 +104,7 @@ end
 --- classes; a bare "dist" can also false-match a real dir named "distfoo").
 --- Good enough to keep generated build output out of the debugger; swap for
 --- a real gitignore matcher if that ever bites.
-H.ignore_pattern_to_lua = function(pattern)
+helpers.ignore_pattern_to_lua = function(pattern)
   local anchored = pattern:sub(1, 1) == "/"
   if anchored then
     pattern = pattern:sub(2)
@@ -117,9 +117,9 @@ H.ignore_pattern_to_lua = function(pattern)
 end
 
 --- @return string[]
-H.load_forceignore_patterns = function()
-  local path = U.get_sf_root() .. ".forceignore"
-  if not U.file_readable(path) then
+helpers.load_forceignore_patterns = function()
+  local path = util.get_sf_root() .. ".forceignore"
+  if not util.file_readable(path) then
     return {}
   end
   local patterns = {}
@@ -138,20 +138,20 @@ end
 --- resolve into the ignored copy instead of the real source file.
 --- @param info table[]
 --- @return table[]
-H.filter_ignored = function(info)
-  local patterns = H.load_forceignore_patterns()
+helpers.filter_ignored = function(info)
+  local patterns = helpers.load_forceignore_patterns()
   if #patterns == 0 then
     return info
   end
 
-  local root = U.get_sf_root()
+  local root = util.get_sf_root()
   local filtered = {}
   for _, entry in ipairs(info) do
     local ok, fname = pcall(vim.uri_to_fname, entry.uri)
     local rel = ok and (fname:sub(1, #root) == root and fname:sub(#root + 1) or fname) or entry.uri
     local ignored = false
     for _, pattern in ipairs(patterns) do
-      if rel:find(H.ignore_pattern_to_lua(pattern)) then
+      if rel:find(helpers.ignore_pattern_to_lua(pattern)) then
         ignored = true
         break
       end
@@ -164,8 +164,8 @@ H.filter_ignored = function(info)
 end
 
 --- @param info table[]
-H.write_cache = function(info)
-  local dir = U.get_plugin_folder_path() .. "debug/"
+helpers.write_cache = function(info)
+  local dir = util.get_plugin_folder_path() .. "debug/"
   if vim.fn.isdirectory(dir) == 0 then
     vim.fn.mkdir(dir, "-p")
   end
@@ -175,12 +175,12 @@ end
 --- Resolve the adapter's "apexReplayDebug.js" path (explicit config, else
 --- auto-detected). Returns nil if not found. Exposed for `:checkhealth`.
 --- @return string|nil
-Debug.resolve_adapter_path = H.resolve_adapter_path
+Debug.resolve_adapter_path = helpers.resolve_adapter_path
 
 --- Register the "apex-replay" adapter with nvim-dap. Safe to call even when
 --- nvim-dap isn't installed.
 Debug.setup_dap = function()
-  H.setup_cache_invalidation()
+  helpers.setup_cache_invalidation()
 
   local ok, dap = pcall(require, "dap")
   if not ok then
@@ -188,9 +188,9 @@ Debug.setup_dap = function()
   end
 
   dap.adapters["apex-replay"] = function(callback, _config)
-    local adapter_path = H.resolve_adapter_path()
+    local adapter_path = helpers.resolve_adapter_path()
     if not adapter_path then
-      return U.show_err(
+      return util.show_err(
         "sf.nvim: Apex Replay Debugger adapter not found. Set `replay_debugger.adapter_path` "
           .. "or install it (see docs/replay-debugger-notes.md)."
       )
@@ -204,14 +204,14 @@ Debug.setup_dap = function()
         if config.lineBreakpointInfo then
           return on_config(config)
         end
-        if H.cache then
+        if helpers.cache then
           local c = vim.deepcopy(config)
-          c.lineBreakpointInfo = H.cache
+          c.lineBreakpointInfo = helpers.cache
           return on_config(c)
         end
-        H.fetch_line_breakpoint_info(function(info, err)
+        helpers.fetch_line_breakpoint_info(function(info, err)
           if not info then
-            return U.show_err("sf.nvim: " .. err)
+            return util.show_err("sf.nvim: " .. err)
           end
           local c = vim.deepcopy(config)
           c.lineBreakpointInfo = info
@@ -227,19 +227,19 @@ end
 Debug.launch = function(log_path)
   local ok, dap = pcall(require, "dap")
   if not ok then
-    return U.show_err("sf.nvim: nvim-dap not installed.")
+    return util.show_err("sf.nvim: nvim-dap not installed.")
   end
 
-  if not U.file_readable(log_path) then
-    return U.show_err("sf.nvim: log file not readable: " .. log_path)
+  if not util.file_readable(log_path) then
+    return util.show_err("sf.nvim: log file not readable: " .. log_path)
   end
 
   local c = cfg()
   if vim.fn.executable(c.node_path) ~= 1 then
-    return U.show_err("sf.nvim: node executable not found: " .. c.node_path)
+    return util.show_err("sf.nvim: node executable not found: " .. c.node_path)
   end
-  if not H.resolve_adapter_path() then
-    return U.show_err("sf.nvim: Apex Replay Debugger adapter not found. Set `replay_debugger.adapter_path`.")
+  if not helpers.resolve_adapter_path() then
+    return util.show_err("sf.nvim: Apex Replay Debugger adapter not found. Set `replay_debugger.adapter_path`.")
   end
 
   -- The adapter reads `logFileContents` (plain text), not `logFile` - see
@@ -258,26 +258,26 @@ Debug.launch = function(log_path)
     trace = c.trace,
   })
 
-  H.set_last_log(vim.fn.fnamemodify(log_path, ":p"))
+  helpers.set_last_log(vim.fn.fnamemodify(log_path, ":p"))
 end
 
 --- Clear the `debugger/lineBreakpoints` cache whenever an Apex file is saved,
 --- since line numbers may have shifted.
-H.setup_cache_invalidation = function()
+helpers.setup_cache_invalidation = function()
   local group = vim.api.nvim_create_augroup("SfReplayDebugger", { clear = true })
   vim.api.nvim_create_autocmd("BufWritePost", {
     group = group,
     pattern = { "*.cls", "*.trigger" },
     callback = function()
-      H.cache = nil
+      helpers.cache = nil
     end,
   })
 end
 
 --- @param path string absolute path
-H.set_last_log = function(path)
-  H.last_log_path = path
-  local dir = U.get_plugin_folder_path() .. "debug/"
+helpers.set_last_log = function(path)
+  helpers.last_log_path = path
+  local dir = util.get_plugin_folder_path() .. "debug/"
   if vim.fn.isdirectory(dir) == 0 then
     vim.fn.mkdir(dir, "-p")
   end
@@ -286,9 +286,9 @@ end
 
 --- Resolve `replay_debugger.log_globs` into absolute glob patterns.
 --- @return string[]
-H.log_search_globs = function()
-  local root = U.get_sf_root()
-  local plugin_dir = U.get_plugin_folder_path()
+helpers.log_search_globs = function()
+  local root = util.get_sf_root()
+  local plugin_dir = util.get_plugin_folder_path()
   local resolved = {}
   for _, pat in ipairs(cfg().log_globs) do
     if pat:sub(1, 1) == "/" then
@@ -304,10 +304,10 @@ end
 
 --- Find local replay-ready logs, newest first, deduplicated by absolute path.
 --- @return { path: string, mtime: integer }[]
-H.list_local_logs = function()
+helpers.list_local_logs = function()
   local seen = {}
   local logs = {}
-  for _, pattern in ipairs(H.log_search_globs()) do
+  for _, pattern in ipairs(helpers.log_search_globs()) do
     for _, path in ipairs(vim.fn.glob(pattern, false, true)) do
       local abs = vim.fn.fnamemodify(path, ":p")
       if not seen[abs] then
@@ -327,7 +327,7 @@ end
 Debug.replay_current_log = function()
   local path = vim.api.nvim_buf_get_name(0)
   if vim.bo.filetype ~= "sflog" and not path:match("%.log$") then
-    return U.show_warn("sf.nvim: current buffer is not a .log file")
+    return util.show_warn("sf.nvim: current buffer is not a .log file")
   end
   Debug.launch(path)
 end
@@ -335,10 +335,10 @@ end
 --- Pick a local log (from `.sfdx/tools/debug/` and the plugin's downloaded
 --- logs folder, see `replay_debugger.log_globs`) and launch it.
 Debug.replay_local_log = function()
-  local root = U.get_sf_root()
-  local logs = H.list_local_logs()
+  local root = util.get_sf_root()
+  local logs = helpers.list_local_logs()
   if #logs == 0 then
-    return U.show_warn("sf.nvim: no local logs found (checked replay_debugger.log_globs)")
+    return util.show_warn("sf.nvim: no local logs found (checked replay_debugger.log_globs)")
   end
 
   local display = function(log)
@@ -346,7 +346,7 @@ Debug.replay_local_log = function()
     return string.format("%s | %s", rel, os.date("%Y-%m-%d %H:%M:%S", log.mtime))
   end
 
-  if U.is_installed("fzf-lua") then
+  if util.is_installed("fzf-lua") then
     local entries = {}
     local by_entry = {}
     for _, log in ipairs(logs) do
@@ -377,33 +377,33 @@ end
 --- Pick a log from the org (fzf-lua), download it into
 --- `.sfdx/tools/debug/logs/` and launch it.
 Debug.replay_org_log = function()
-  local dir = U.get_sf_root() .. ".sfdx/tools/debug/logs/"
+  local dir = util.get_sf_root() .. ".sfdx/tools/debug/logs/"
   require("sf.org").pick_log(dir, Debug.launch)
 end
 
 --- Relaunch the most recently launched replay log.
 Debug.replay_last_log = function()
-  local path = H.last_log_path
+  local path = helpers.last_log_path
   if not path then
-    local file = U.get_plugin_folder_path() .. "debug/last_log.txt"
-    if U.file_readable(file) then
+    local file = util.get_plugin_folder_path() .. "debug/last_log.txt"
+    if util.file_readable(file) then
       path = vim.fn.readfile(file)[1]
     end
   end
-  if not path or not U.file_readable(path) then
-    return U.show_warn("sf.nvim: no previous replay log found")
+  if not path or not util.file_readable(path) then
+    return util.show_warn("sf.nvim: no previous replay log found")
   end
   Debug.launch(path)
 end
 
 --- Clear the cached `lineBreakpointInfo` and fetch a fresh copy from apex_ls.
 Debug.refresh_breakpoint_info = function()
-  H.cache = nil
-  H.fetch_line_breakpoint_info(function(info, err)
+  helpers.cache = nil
+  helpers.fetch_line_breakpoint_info(function(info, err)
     if not info then
-      return U.show_err("sf.nvim: " .. err)
+      return util.show_err("sf.nvim: " .. err)
     end
-    U.show(string.format("sf.nvim: breakpoint info refreshed (%d types)", #info))
+    util.show(string.format("sf.nvim: breakpoint info refreshed (%d types)", #info))
   end)
 end
 
@@ -413,12 +413,12 @@ end
 --- @param session table
 --- @param user string|nil username/email/Id; nil = the org's own user
 --- @param cb fun(user_id: string|nil, err: string|nil)
-H.resolve_target_user = function(session, user, cb)
-  if not U.is_empty_str(user) and user:match("^005%w%w%w%w%w%w%w%w%w%w%w%w%w%w%w?%w?%w?$") then
+helpers.resolve_target_user = function(session, user, cb)
+  if not util.is_empty_str(user) and user:match("^005%w%w%w%w%w%w%w%w%w%w%w%w%w%w%w?%w?%w?$") then
     return cb(user, nil)
   end
 
-  local username = U.is_empty_str(user) and session.username or user
+  local username = util.is_empty_str(user) and session.username or user
   Api.query(session, string.format("SELECT Id FROM User WHERE Username='%s'", username), function(records, err)
     if not records or #records == 0 then
       return cb(nil, err or ("no user found with username '" .. username .. "'"))
@@ -427,11 +427,11 @@ H.resolve_target_user = function(session, user, cb)
   end)
 end
 
---- Find the `SFNVIM_REPLAY` DebugLevel (ApexCode=FINEST, Visualforce=FINER),
+--- Find the `ReplayDebuggerLevels` DebugLevel (ApexCode=FINEST, Visualforce=FINER),
 --- creating it if missing.
 --- @param session table
 --- @param cb fun(debug_level_id: string|nil, err: string|nil)
-H.find_or_create_debug_level = function(session, cb)
+helpers.find_or_create_debug_level = function(session, cb)
   Api.query(session, string.format("SELECT Id FROM DebugLevel WHERE DeveloperName='%s'", DEBUG_LEVEL_NAME), function(records, err)
     if not records then
       return cb(nil, err)
@@ -452,19 +452,20 @@ end
 --- ISO8601 UTC timestamp `minutes` from now (or now, if `minutes` is nil/0).
 --- @param minutes number|nil
 --- @return string
-H.iso_utc = function(minutes)
+helpers.iso_utc = function(minutes)
   return os.date("!%Y-%m-%dT%H:%M:%S.000Z", os.time() + (minutes or 0) * 60)
 end
 
---- Create a TraceFlag for `user_id`/`debug_level_id` expiring in `minutes`,
---- or extend an existing one (whichever for that user/LogType has the latest
---- expiration) if it hasn't expired yet.
+--- Renews the user's existing TraceFlag (whether still active or already
+--- expired) if one exists for that user/LogType, creating one only when
+--- they have none at all - one TraceFlag record per user, ever, instead of
+--- a fresh (soon-orphaned) row every time a previous one expired.
 --- @param session table
 --- @param user_id string
 --- @param debug_level_id string
 --- @param minutes number
 --- @param cb fun(ok: boolean, err: string|nil)
-H.upsert_trace_flag = function(session, user_id, debug_level_id, minutes, cb)
+helpers.upsert_trace_flag = function(session, user_id, debug_level_id, minutes, cb)
   local soql = string.format(
     "SELECT Id, ExpirationDate FROM TraceFlag WHERE TracedEntityId='%s' AND LogType='DEVELOPER_LOG' ORDER BY ExpirationDate DESC LIMIT 1",
     user_id
@@ -475,12 +476,11 @@ H.upsert_trace_flag = function(session, user_id, debug_level_id, minutes, cb)
     end
 
     local existing = records[1]
-    local still_active = existing and H.parse_sf_datetime(existing.ExpirationDate) > os.time()
 
-    if still_active then
+    if existing then
       return Api.update(session, "TraceFlag", existing.Id, {
         DebugLevelId = debug_level_id,
-        ExpirationDate = H.iso_utc(minutes),
+        ExpirationDate = helpers.iso_utc(minutes),
       }, cb)
     end
 
@@ -488,8 +488,8 @@ H.upsert_trace_flag = function(session, user_id, debug_level_id, minutes, cb)
       TracedEntityId = user_id,
       DebugLevelId = debug_level_id,
       LogType = "DEVELOPER_LOG",
-      StartDate = H.iso_utc(0),
-      ExpirationDate = H.iso_utc(minutes),
+      StartDate = helpers.iso_utc(0),
+      ExpirationDate = helpers.iso_utc(minutes),
     }, function(id, create_err)
       cb(id ~= nil, create_err)
     end)
@@ -500,7 +500,7 @@ end
 --- into a Unix timestamp.
 --- @param s string
 --- @return integer
-H.parse_sf_datetime = function(s)
+helpers.parse_sf_datetime = function(s)
   local y, mo, d, h, mi, se = s:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
   if not y then
     return 0
@@ -520,7 +520,7 @@ end
 local MAX_TRACE_FLAG_MINUTES = 24 * 60
 
 --- Enable Apex replay-ready debug logging: creates (or reuses) a
---- `SFNVIM_REPLAY` DebugLevel and an active TraceFlag, for the current org
+--- `ReplayDebuggerLevels` DebugLevel and an active TraceFlag, for the current org
 --- user by default.
 --- @param opts number|table|nil number = minutes (back-compat shorthand), or
 ---   `{ minutes = number, user = string, alias = string }`. `user` is a
@@ -532,11 +532,17 @@ Debug.enable_replay_logging = function(opts)
   local minutes = math.min(opts.minutes or (cfg().trace_flag_hours * 60), MAX_TRACE_FLAG_MINUTES)
 
   if not Api.has_curl() then
-    return U.show_err("sf.nvim: `curl` is required for replay logging (Tooling API calls).")
+    return util.show_err("sf.nvim: `curl` is required for replay logging (Tooling API calls).")
   end
-  if not opts.alias and U.is_empty_str(U.target_org) then
-    return U.show_err("sf.nvim: Target_org empty!")
+  if not opts.alias and util.is_empty_str(util.target_org) then
+    return util.show_err("sf.nvim: Target_org empty!")
   end
+
+  -- Three sequential Tooling API round trips (resolve user -> debug level ->
+  -- trace flag) follow, easily 1-3s -- a progress handle gives immediate
+  -- "it's working" feedback instead of the notify-only final result the
+  -- user would otherwise only see (or miss) after that delay.
+  local handle = require("sf.ui.progress").start({ msg = "Enabling replay logging..." })
 
   -- `Api.get_session(nil, cb)` behaves identically to `Api.get_session(cb)`
   -- (its own dispatch treats a non-function first argument as the alias,
@@ -544,9 +550,9 @@ Debug.enable_replay_logging = function(opts)
   -- covers both the alias and no-alias cases, no branch needed.
   Api.get_session(opts.alias, function(session, err)
     if not session then
-      return U.show_err("sf.nvim: " .. err)
+      return handle:finish(false, "sf.nvim: " .. err)
     end
-    H.enable_replay_logging_with_session(session, opts.user, minutes)
+    helpers.enable_replay_logging_with_session(session, opts.user, minutes, handle)
   end)
 end
 
@@ -555,20 +561,22 @@ end
 ---   picker below)
 --- @param user string|nil
 --- @param minutes number
-H.enable_replay_logging_with_session = function(session, user, minutes)
-  H.resolve_target_user(session, user, function(user_id, user_err)
+--- @param handle table progress handle (`sf.ui.progress.start`) driving the
+---   "Enabling replay logging..." toast/spinner while these calls run
+helpers.enable_replay_logging_with_session = function(session, user, minutes, handle)
+  helpers.resolve_target_user(session, user, function(user_id, user_err)
     if not user_id then
-      return U.show_err("sf.nvim: " .. user_err)
+      return handle:finish(false, "sf.nvim: " .. user_err)
     end
-    H.find_or_create_debug_level(session, function(debug_level_id, dl_err)
+    helpers.find_or_create_debug_level(session, function(debug_level_id, dl_err)
       if not debug_level_id then
-        return U.show_err("sf.nvim: " .. dl_err)
+        return handle:finish(false, "sf.nvim: " .. dl_err)
       end
-      H.upsert_trace_flag(session, user_id, debug_level_id, minutes, function(ok, tf_err)
+      helpers.upsert_trace_flag(session, user_id, debug_level_id, minutes, function(ok, tf_err)
         if not ok then
-          return U.show_err("sf.nvim: failed to enable replay logging" .. (tf_err and (": " .. tf_err) or ""))
+          return handle:finish(false, "sf.nvim: failed to enable replay logging" .. (tf_err and (": " .. tf_err) or ""))
         end
-        U.show(string.format("sf.nvim: replay logging enabled for %s (%d min)", user or session.username, minutes))
+        handle:finish(true, string.format("sf.nvim: replay logging enabled for %s (%d min)", user or session.username, minutes))
         require("sf.state").refresh_trace_flags()
       end)
     end)
@@ -580,37 +588,38 @@ end
 --- @param minutes number|nil
 Debug.pick_user_and_enable_replay_logging = function(minutes)
   if not Api.has_curl() then
-    return U.show_err("sf.nvim: `curl` is required for replay logging (Tooling API calls).")
+    return util.show_err("sf.nvim: `curl` is required for replay logging (Tooling API calls).")
   end
-  if U.is_empty_str(U.target_org) then
-    return U.show_err("sf.nvim: Target_org empty!")
+  if util.is_empty_str(util.target_org) then
+    return util.show_err("sf.nvim: Target_org empty!")
   end
 
   local resolved_minutes = math.min(minutes or (cfg().trace_flag_hours * 60), MAX_TRACE_FLAG_MINUTES)
 
   Api.get_session(function(session, err)
     if not session then
-      return U.show_err("sf.nvim: " .. err)
+      return util.show_err("sf.nvim: " .. err)
     end
     Api.query_std(session, "SELECT Username, Name FROM User WHERE IsActive = true ORDER BY Name LIMIT 50", function(records, qerr)
       if not records or #records == 0 then
-        return U.show_err("sf.nvim: " .. (qerr or "no active users found"))
+        return util.show_err("sf.nvim: " .. (qerr or "no active users found"))
       end
 
       local entries, by_entry = {}, {}
-      for _, u in ipairs(records) do
-        local entry = string.format("%s (%s)", u.Name, u.Username)
+      for _, user_record in ipairs(records) do
+        local entry = string.format("%s (%s)", user_record.Name, user_record.Username)
         table.insert(entries, entry)
-        by_entry[entry] = u.Username
+        by_entry[entry] = user_record.Username
       end
 
       local on_choice = function(username)
         if username then
-          H.enable_replay_logging_with_session(session, username, resolved_minutes)
+          local handle = require("sf.ui.progress").start({ msg = "Enabling replay logging..." })
+          helpers.enable_replay_logging_with_session(session, username, resolved_minutes, handle)
         end
       end
 
-      if U.is_installed("fzf-lua") then
+      if util.is_installed("fzf-lua") then
         require("fzf-lua").fzf_exec(entries, {
           actions = {
             ["default"] = function(selected)
@@ -632,19 +641,21 @@ end
 --- @param user string|nil username/email/Id
 Debug.disable_replay_logging = function(user)
   if not Api.has_curl() then
-    return U.show_err("sf.nvim: `curl` is required for replay logging (Tooling API calls).")
+    return util.show_err("sf.nvim: `curl` is required for replay logging (Tooling API calls).")
   end
-  if U.is_empty_str(U.target_org) then
-    return U.show_err("sf.nvim: Target_org empty!")
+  if util.is_empty_str(util.target_org) then
+    return util.show_err("sf.nvim: Target_org empty!")
   end
+
+  local handle = require("sf.ui.progress").start({ msg = "Disabling replay logging..." })
 
   Api.get_session(function(session, err)
     if not session then
-      return U.show_err("sf.nvim: " .. err)
+      return handle:finish(false, "sf.nvim: " .. err)
     end
-    H.resolve_target_user(session, user, function(user_id, user_err)
+    helpers.resolve_target_user(session, user, function(user_id, user_err)
       if not user_id then
-        return U.show_err("sf.nvim: " .. user_err)
+        return handle:finish(false, "sf.nvim: " .. user_err)
       end
 
       local soql = string.format(
@@ -653,13 +664,13 @@ Debug.disable_replay_logging = function(user)
       )
       Api.query(session, soql, function(records, query_err)
         if not records or #records == 0 then
-          return U.show_warn("sf.nvim: " .. (query_err or "no replay logging TraceFlag found for that user"))
+          return handle:finish(false, "sf.nvim: " .. (query_err or "no replay logging TraceFlag found for that user"))
         end
         Api.delete(session, "TraceFlag", records[1].Id, function(ok, delete_err)
           if not ok then
-            return U.show_err("sf.nvim: " .. (delete_err or "failed to disable replay logging"))
+            return handle:finish(false, "sf.nvim: " .. (delete_err or "failed to disable replay logging"))
           end
-          U.show("sf.nvim: replay logging disabled")
+          handle:finish(true, "sf.nvim: replay logging disabled")
           require("sf.state").refresh_trace_flags()
         end)
       end)
@@ -693,21 +704,21 @@ end
 --- doesn't look enabled, since the log may then lack the required levels.
 Debug.run_test_and_replay = function()
   require("sf.test").run_current_test(function()
-    H.launch_newest_org_log()
+    helpers.launch_newest_org_log()
   end)
 end
 
-H.launch_newest_org_log = function()
+helpers.launch_newest_org_log = function()
   Api.get_session(function(session, err)
     if not session then
-      return U.show_err("sf.nvim: " .. err)
+      return util.show_err("sf.nvim: " .. err)
     end
     Api.query(session, "SELECT Id FROM ApexLog ORDER BY StartTime DESC LIMIT 1", function(records, qerr)
       if not records or #records == 0 then
-        return U.show_warn("sf.nvim: no logs found in org - run `:SF debug enable` first? (" .. (qerr or "") .. ")")
+        return util.show_warn("sf.nvim: no logs found in org - run `:SF debug enable` first? (" .. (qerr or "") .. ")")
       end
 
-      local dir = U.get_sf_root() .. ".sfdx/tools/debug/logs/"
+      local dir = util.get_sf_root() .. ".sfdx/tools/debug/logs/"
       require("sf.org").download_log(records[1].Id, dir, Debug.launch)
     end)
   end)
@@ -715,39 +726,39 @@ end
 
 --- Download the Apex Replay Debugger adapter from Open VSX into
 --- `stdpath("data")/sf-nvim/apex-replay-debugger/` (the default auto-detect
---- location, see `H.resolve_adapter_path`). Requires `curl` and `unzip`.
+--- location, see `helpers.resolve_adapter_path`). Requires `curl` and `unzip`.
 Debug.install_adapter = function()
   if not Api.has_curl() or vim.fn.executable("unzip") ~= 1 then
-    return U.show_err("sf.nvim: `curl` and `unzip` are required to install the adapter.")
+    return util.show_err("sf.nvim: `curl` and `unzip` are required to install the adapter.")
   end
 
   local meta_url = "https://open-vsx.org/api/salesforce/salesforcedx-vscode-apex-replay-debugger/latest"
-  U.show("sf.nvim: fetching adapter metadata...")
+  util.show("sf.nvim: fetching adapter metadata...")
   vim.system(
     { "curl", "-sL", meta_url },
     {},
     vim.schedule_wrap(function(obj)
-      if obj.code ~= 0 or U.is_empty_str(obj.stdout) then
-        return U.show_err("sf.nvim: failed to fetch adapter metadata")
+      if obj.code ~= 0 or util.is_empty_str(obj.stdout) then
+        return util.show_err("sf.nvim: failed to fetch adapter metadata")
       end
 
       local ok, meta = pcall(vim.json.decode, obj.stdout)
       local download_url = ok and vim.tbl_get(meta, "downloads", "universal")
       local version = ok and meta.version
       if not download_url then
-        return U.show_err("sf.nvim: could not find a download URL in adapter metadata")
+        return util.show_err("sf.nvim: could not find a download URL in adapter metadata")
       end
 
       local dest_dir = vim.fn.stdpath("data") .. "/sf-nvim/apex-replay-debugger"
       local tmp_vsix = vim.fn.tempname() .. ".vsix"
-      U.show("sf.nvim: downloading adapter v" .. version .. "...")
+      util.show("sf.nvim: downloading adapter v" .. version .. "...")
 
       vim.system(
         { "curl", "-sL", "-o", tmp_vsix, download_url },
         {},
         vim.schedule_wrap(function(dl)
           if dl.code ~= 0 then
-            return U.show_err("sf.nvim: failed to download adapter")
+            return util.show_err("sf.nvim: failed to download adapter")
           end
 
           vim.fn.mkdir(dest_dir, "-p")
@@ -757,9 +768,9 @@ Debug.install_adapter = function()
             vim.schedule_wrap(function(uz)
               vim.fn.delete(tmp_vsix)
               if uz.code ~= 0 then
-                return U.show_err("sf.nvim: failed to unzip adapter: " .. (uz.stderr or ""))
+                return util.show_err("sf.nvim: failed to unzip adapter: " .. (uz.stderr or ""))
               end
-              U.show(string.format("sf.nvim: installed Apex Replay Debugger adapter v%s to %s", version, dest_dir))
+              util.show(string.format("sf.nvim: installed Apex Replay Debugger adapter v%s to %s", version, dest_dir))
             end)
           )
         end)
@@ -767,5 +778,7 @@ Debug.install_adapter = function()
     end)
   )
 end
+
+Debug.__test = helpers
 
 return Debug

@@ -832,4 +832,59 @@ T["diff_in_org"]["ignores nil choice (user canceled)"] = function()
   eq(child.lua_get([[_G.diff_called]]), false)
 end
 
+T["download_log"] = new_set()
+
+T["download_log"]["fetches the body via the Tooling API (scoped to the given alias) and writes it to disk"] = function()
+  child.lua([[
+    H = M.__test
+    rest_api = require("sf.sub.rest_api")
+
+    _G._session_alias = nil
+    rest_api.get_session = function(alias, cb)
+      _G._session_alias = alias
+      cb({ token = "tok", url = "https://x", api_version = "60.0" }, nil)
+    end
+
+    _G._body_log_id = nil
+    rest_api.download_log_body = function(session, log_id, cb)
+      _G._body_log_id = log_id
+      cb("13:46:23.0 (1)|EXECUTION_STARTED", nil)
+    end
+
+    _G._dir = vim.fn.tempname() .. "/"
+    _G._done_path = nil
+    H.download_log("07Lxyz", _G._dir, function(path)
+      _G._done_path = path
+    end, "myorg")
+  ]])
+
+  eq(child.lua_get([[_G._session_alias]]), "myorg")
+  eq(child.lua_get([[_G._body_log_id]]), "07Lxyz")
+  local done_path = child.lua_get([[_G._done_path]])
+  eq(done_path, child.lua_get([[_G._dir]]) .. "07Lxyz.log")
+  eq(child.lua_get([[vim.fn.filereadable(_G._done_path) == 1]]), true)
+  local written = child.lua_get([[table.concat(vim.fn.readfile(_G._done_path), "\n")]])
+  eq(written, "13:46:23.0 (1)|EXECUTION_STARTED")
+
+  child.lua([[vim.fn.delete(_G._dir, "rf")]])
+end
+
+T["download_log"]["does not call on_done when the session can't be resolved"] = function()
+  child.lua([[
+    H = M.__test
+    rest_api = require("sf.sub.rest_api")
+
+    rest_api.get_session = function(_, cb)
+      cb(nil, "no default org")
+    end
+
+    _G._on_done_called = false
+    H.download_log("07Lxyz", vim.fn.tempname() .. "/", function()
+      _G._on_done_called = true
+    end, "myorg")
+  ]])
+
+  eq(child.lua_get([[_G._on_done_called]]), false)
+end
+
 return T

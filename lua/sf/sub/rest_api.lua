@@ -248,4 +248,68 @@ rest_api.delete = function(session, sobject, id, cb)
   end)
 end
 
+--- Executes anonymous Apex via the Tooling API's `executeAnonymous` endpoint
+--- directly, skipping both the CLI's Node startup cost and the terminal
+--- buffer that `sf apex run` needs. Trade-off: this endpoint reports only
+--- compile/runtime success and exception details, not `System.debug` log
+--- output (capturing that needs a trace flag set on the running user
+--- first) - use the CLI-based `run_anonymous`/`run_anonymous_stdin` in
+--- `sf.term` when debug log lines are needed.
+---@param session table {token, url, api_version}
+---@param apex_body string
+---@param cb fun(result: table|nil, err: string|nil) `result` has `success`,
+---  `compiled`, `compileProblem`, `exceptionMessage`, `exceptionStackTrace`,
+---  `line`, `column`
+rest_api.execute_anonymous = function(session, apex_body, cb)
+  rest_api.curl_json({
+    "-G",
+    string.format("%s/services/data/v%s/tooling/executeAnonymous", session.url, session.api_version),
+    "--data-urlencode",
+    "anonymousBody=" .. apex_body,
+    "-H",
+    "Authorization: Bearer " .. session.token,
+  }, cb)
+end
+
+--- Like `curl_json`, but for endpoints that don't return JSON (e.g. the
+--- ApexLog `Body` field below) - returns the raw response body text
+--- instead of decoding it. Salesforce still reports *errors* as a JSON
+--- array of `{message, errorCode}` even on these endpoints, so a non-2xx
+--- status still gets the same error-surfacing `curl_json` does.
+---@param args string[] curl args (method/url/headers); auth is omitted,
+---  callers pass their own `session.token`
+---@param cb fun(body: string|nil, err: string|nil)
+rest_api.curl_raw = function(args, cb)
+  local cmd = vim.list_extend({ "curl", "-s", "-w", "\nHTTPSTATUS:%{http_code}" }, args)
+  util.silent_system_call(cmd, nil, "API request failed", function(obj)
+    local body, status = (obj.stdout or ""):match("^(.-)\nHTTPSTATUS:(%d+)%s*$")
+    status = tonumber(status) or 0
+    body = body or ""
+
+    if status < 200 or status >= 300 then
+      local ok, decoded = pcall(vim.json.decode, body)
+      if ok and decoded and decoded[1] and decoded[1].message then
+        return cb(nil, decoded[1].message)
+      end
+      return cb(nil, "HTTP " .. status)
+    end
+
+    cb(body, nil)
+  end)
+end
+
+--- Fetches an ApexLog's raw body text via the Tooling API directly - skips
+--- both the CLI's Node startup cost and a disk round trip through `sf apex
+--- get log`.
+---@param session table {token, url, api_version}
+---@param log_id string
+---@param cb fun(body: string|nil, err: string|nil)
+rest_api.download_log_body = function(session, log_id, cb)
+  rest_api.curl_raw({
+    string.format("%s/services/data/v%s/tooling/sobjects/ApexLog/%s/Body", session.url, session.api_version, log_id),
+    "-H",
+    "Authorization: Bearer " .. session.token,
+  }, cb)
+end
+
 return rest_api
