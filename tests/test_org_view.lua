@@ -177,6 +177,33 @@ test_set["render_list_lines: scratch expiry hidden for far-future dates"] = func
   expect.no_match(line, "expires")
 end
 
+test_set["render_list_lines: shows a 'refreshing...' marker for a pending sandbox refresh"] = function()
+  child.lua([[
+    records = {
+      {
+        alias = "sandbox1",
+        username = "u",
+        is_sandbox = true,
+        is_default = false,
+        is_default_devhub = false,
+        sandbox_refresh_pending = true,
+      },
+    }
+  ]])
+  local line = child.lua_get([[(org_view.render_list_lines(records))[1] ]])
+  expect.match(line, "refreshing")
+end
+
+test_set["render_list_lines: no 'refreshing...' marker without the pending flag"] = function()
+  child.lua([[
+    records = {
+      { alias = "sandbox1", username = "u", is_sandbox = true, is_default = false, is_default_devhub = false },
+    }
+  ]])
+  local line = child.lua_get([[(org_view.render_list_lines(records))[1] ]])
+  expect.no_match(line, "refreshing")
+end
+
 test_set["render_list_lines: alias column aligned across rows"] = function()
   child.lua([[
     records = {

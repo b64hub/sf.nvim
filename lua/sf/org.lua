@@ -89,6 +89,43 @@ function Org.open_org(alias)
   helpers.open_org(alias)
 end
 
+--- Delete a scratch org or sandbox. The caller is responsible for
+--- confirming with the user first (the org dashboard's "D" key does that)
+--- -- this function never prompts itself, so it's safe to call from
+--- anywhere once a confirmation has already happened.
+---
+--- Scratch orgs are deleted via a direct Dev Hub API call (delete the
+--- matching `ActiveScratchOrg` record) instead of shelling out to `sf org
+--- delete scratch`, per AGENTS.md's preference for direct API calls where
+--- one call can do the job. Sandboxes have no such direct-API equivalent
+--- (deletion is a whole CLI-orchestrated flow against the production org),
+--- so that path still shells out to `sf org delete sandbox`.
+---@param record table an entry from `helpers.orgs`
+---@param on_done fun()|nil called once the org is gone; the in-memory
+---  cache and on-disk snapshot are already updated by the time this fires
+function Org.delete_org(record, on_done)
+  helpers.delete_org(record, on_done)
+end
+
+--- Refresh a sandbox from its Dev Hub. The caller is responsible for
+--- confirming with the user first -- this function never prompts itself.
+--- See `helpers.refresh_sandbox` for how the Dev Hub and sandbox name are
+--- resolved.
+---@param record table an entry from `helpers.orgs`
+---@param on_done fun()|nil called once the refresh has been requested
+function Org.refresh_sandbox(record, on_done)
+  helpers.refresh_sandbox(record, on_done)
+end
+
+--- Clear a sandbox's pending-refresh flag/cache entry. Not called from
+--- anywhere yet -- there's no status polling in place -- but this is the
+--- hook a future "check sandbox refresh status" feature calls once it
+--- confirms a refresh actually finished.
+---@param alias string
+function Org.clear_sandbox_refresh_status(alias)
+  helpers.clear_sandbox_refresh_pending(alias)
+end
+
 --- Fetch and browse org logs for the current target_org: opens the org
 --- dashboard on its Logs tab (fetch/filter/download all live there already)
 --- instead of a separate one-shot fzf picker.
@@ -304,6 +341,79 @@ end
 helpers.orgs = {} -- array of { alias, username, is_scratch, is_sandbox, is_prod, is_default, expiration_date }
 helpers.ORG_LIST_CACHE_FILE = "orgs.json" -- last-known-good snapshot; see store_orgs/with_orgs
 
+-- Persisted record of sandboxes with a refresh requested but not yet
+-- confirmed done -- map of alias -> { devhub_alias, sandbox_name,
+-- started_at }. There's no status polling yet (the CLI call is
+-- `--async`), so this is write-mostly for now: it just lets the dashboard
+-- show "refreshing..." instead of forgetting the request ever happened,
+-- and gives a future polling feature somewhere to read pending refreshes
+-- from and a way to clear one once it confirms completion.
+helpers.SANDBOX_REFRESH_CACHE_FILE = "sandbox_refreshes.json"
+
+--- Find an org record by alias, or nil. Shared by the sandbox-refresh
+--- pending-flag helpers below.
+---@param alias string
+---@return table|nil
+helpers.find_org_by_alias = function(alias)
+  for _, record in ipairs(helpers.orgs) do
+    if record.alias == alias then
+      return record
+    end
+  end
+  return nil
+end
+
+--- Record that a sandbox refresh was just requested: flags the in-memory
+--- record (so the dashboard, which holds this very table, repaints with a
+--- "refreshing..." marker immediately) and persists it, so the flag
+--- survives a `store_orgs` rebuild (full `sf org list` refresh) or an nvim
+--- restart.
+---@param alias string
+---@param devhub_alias string
+---@param sandbox_name string
+helpers.mark_sandbox_refresh_pending = function(alias, devhub_alias, sandbox_name)
+  local record = helpers.find_org_by_alias(alias)
+  if record then
+    record.sandbox_refresh_pending = true
+  end
+
+  local pending = util.read_cache_json(helpers.SANDBOX_REFRESH_CACHE_FILE) or {}
+  pending[alias] = { devhub_alias = devhub_alias, sandbox_name = sandbox_name, started_at = os.time() }
+  util.write_cache_json(helpers.SANDBOX_REFRESH_CACHE_FILE, pending)
+end
+
+--- Clear a sandbox's pending-refresh flag/cache entry -- not called from
+--- anywhere yet (no poller exists), but this is the hook a future
+--- "check sandbox refresh status" feature calls once it confirms the
+--- refresh actually finished.
+---@param alias string
+helpers.clear_sandbox_refresh_pending = function(alias)
+  local record = helpers.find_org_by_alias(alias)
+  if record then
+    record.sandbox_refresh_pending = nil
+  end
+
+  local pending = util.read_cache_json(helpers.SANDBOX_REFRESH_CACHE_FILE) or {}
+  pending[alias] = nil
+  util.write_cache_json(helpers.SANDBOX_REFRESH_CACHE_FILE, pending)
+end
+
+--- Re-apply persisted pending-refresh flags onto freshly built org
+--- records -- `store_orgs` rebuilds `helpers.orgs` from scratch on every
+--- `sf org list`, which would otherwise silently drop the in-memory flag
+--- `mark_sandbox_refresh_pending` set on the previous one.
+helpers.seed_sandbox_refresh_pending_flags = function()
+  local pending = util.read_cache_json(helpers.SANDBOX_REFRESH_CACHE_FILE)
+  if not pending then
+    return
+  end
+  for _, record in ipairs(helpers.orgs) do
+    if pending[record.alias] then
+      record.sandbox_refresh_pending = true
+    end
+  end
+end
+
 --- Open a specific org (not necessarily the target_org) in the browser.
 ---@param alias string
 helpers.open_org = function(alias)
@@ -320,6 +430,185 @@ helpers.clean_org_cache = function()
   while #helpers.orgs > 0 do
     table.remove(helpers.orgs)
   end
+end
+
+--- Remove `alias` from the in-memory org cache and refresh its on-disk
+--- snapshot, right after a successful deletion -- same in-place-mutation
+--- contract as `clean_org_cache`/`store_orgs`, so the dashboard (which
+--- holds this very table as its `records`) drops the row immediately
+--- instead of waiting for the next full `sf org list`.
+---@param alias string
+helpers.remove_org_from_cache = function(alias)
+  for index, record in ipairs(helpers.orgs) do
+    if record.alias == alias then
+      table.remove(helpers.orgs, index)
+      break
+    end
+  end
+  util.write_cache_json(helpers.ORG_LIST_CACHE_FILE, helpers.orgs)
+end
+
+--- See `Org.delete_org`.
+---@param record table
+---@param on_done fun()|nil
+helpers.delete_org = function(record, on_done)
+  if not record.is_scratch and not record.is_sandbox then
+    return util.show_err("Only scratch orgs and sandboxes can be deleted.")
+  end
+
+  if record.is_scratch then
+    return helpers.delete_scratch_org(record, on_done)
+  end
+
+  return helpers.delete_sandbox(record, on_done)
+end
+
+--- Deletes the Dev Hub's `ActiveScratchOrg` record for `record` via a
+--- direct REST call (same end effect as `org.delete()` inside `sf org
+--- delete scratch`: query `ActiveScratchOrg` by `SignupUsername`, then
+--- DELETE it through the standard, non-Tooling sobjects endpoint).
+---@param record table
+---@param on_done fun()|nil
+helpers.delete_scratch_org = function(record, on_done)
+  if util.is_empty_str(record.devhub_username) then
+    return util.show_err(record.alias .. ": no Dev Hub on record, can't delete via API.")
+  end
+
+  local rest_api = require("sf.sub.rest_api")
+  rest_api.get_session(record.devhub_username, function(session, session_err)
+    if not session then
+      return util.show_err("Failed to connect to Dev Hub: " .. (session_err or "unknown error"))
+    end
+
+    local soql = string.format("SELECT Id FROM ActiveScratchOrg WHERE SignupUsername = '%s'", record.username)
+    rest_api.query_std(session, soql, function(found, query_err)
+      if not found or #found == 0 then
+        return util.show_err(
+          record.alias .. ": not found on the Dev Hub (already deleted?)." .. (query_err and (" " .. query_err) or "")
+        )
+      end
+
+      rest_api.delete_std(session, "ActiveScratchOrg", found[1].Id, function(ok, delete_err)
+        if not ok then
+          return util.show_err(
+            "Failed to delete scratch org '" .. record.alias .. "': " .. (delete_err or "unknown error")
+          )
+        end
+
+        util.show("Scratch org '" .. record.alias .. "' deleted.")
+        helpers.remove_org_from_cache(record.alias)
+        if on_done then
+          on_done()
+        end
+
+        -- Best-effort local cleanup (removes the auth file/alias/target-org
+        -- refs `sf org delete scratch` would also remove) -- fire and
+        -- forget, the remote record is already gone either way.
+        util.silent_job_call(cmd_builder:new():cmd("org"):act("logout"):addParams("-p"):set_org(record.alias):build())
+      end)
+    end)
+  end)
+end
+
+--- Refresh a sandbox from its Dev Hub, assuming the *default* Dev Hub
+--- (`isDefaultDevHubUsername` on `sf org list`) is the sandbox's
+--- production org -- unlike scratch orgs, a sandbox record carries no
+--- `devHubUsername` of its own, so there's no other unambiguous way to
+--- resolve it from `sf org list` alone. A missing or wrong default Dev Hub
+--- surfaces as a normal error (no default configured, or a
+--- `SandboxProcess` lookup that comes up empty) instead of silently
+--- refreshing against the wrong org.
+---@param record table
+---@param on_done fun()|nil called once the refresh has been *requested*
+---  (the CLI call runs `--async`, it does not wait for completion)
+helpers.refresh_sandbox = function(record, on_done)
+  if not record.is_sandbox then
+    return util.show_err("Only sandboxes can be refreshed.")
+  end
+
+  local devhub = nil
+  for _, candidate in ipairs(helpers.orgs) do
+    if candidate.is_default_devhub then
+      devhub = candidate
+      break
+    end
+  end
+  if not devhub then
+    return util.show_err("No default Dev Hub configured. Run `sf config set target-dev-hub=<alias>` first.")
+  end
+
+  local rest_api = require("sf.sub.rest_api")
+  rest_api.get_session(devhub.alias, function(session, session_err)
+    if not session then
+      return util.show_err(
+        "Failed to connect to Dev Hub '" .. devhub.alias .. "': " .. (session_err or "unknown error")
+      )
+    end
+
+    -- SandboxProcess.SandboxOrganization is a 15-char org id.
+    local org_id_15 = string.sub(record.org_id or "", 1, 15)
+    local soql = string.format(
+      "SELECT SandboxName FROM SandboxProcess WHERE SandboxOrganization = '%s' AND Status NOT IN ('D', 'E') ORDER BY CreatedDate DESC LIMIT 1",
+      org_id_15
+    )
+    rest_api.query(session, soql, function(found, query_err)
+      if not found or #found == 0 then
+        return util.show_err(
+          "Could not find '"
+            .. record.alias
+            .. "' under default Dev Hub '"
+            .. devhub.alias
+            .. "' -- is that the right Dev Hub? "
+            .. (query_err or "")
+        )
+      end
+
+      local cmd = cmd_builder
+        :new()
+        :cmd("org")
+        :act("refresh sandbox")
+        :addParams("-n", found[1].SandboxName)
+        :addParams("-p")
+        :addParams("--async")
+        :set_org(devhub.alias)
+        :buildAsTable()
+
+      util.system_call(
+        cmd,
+        "Sandbox '" .. record.alias .. "' refresh requested.",
+        "Failed to refresh sandbox '" .. record.alias .. "'.",
+        function()
+          helpers.mark_sandbox_refresh_pending(record.alias, devhub.alias, found[1].SandboxName)
+          if on_done then
+            on_done()
+          end
+        end,
+        "Requesting sandbox refresh..."
+      )
+    end)
+  end)
+end
+
+--- Deletes a sandbox via `sf org delete sandbox` -- unlike scratch orgs,
+--- there's no single direct-API call that replicates it (it's a
+--- CLI-orchestrated flow against the production org), so this is the one
+--- deletion path that still shells out.
+---@param record table
+---@param on_done fun()|nil
+helpers.delete_sandbox = function(record, on_done)
+  local cmd = cmd_builder:new():cmd("org"):act("delete sandbox"):addParams("-p"):set_org(record.alias):buildAsTable()
+  util.system_call(
+    cmd,
+    "Sandbox '" .. record.alias .. "' deleted.",
+    "Failed to delete sandbox '" .. record.alias .. "'.",
+    function()
+      helpers.remove_org_from_cache(record.alias)
+      if on_done then
+        on_done()
+      end
+    end,
+    "Deleting sandbox..."
+  )
 end
 
 --- Flip the `is_default` flag onto `alias` and off every other cached org,
@@ -504,6 +793,14 @@ helpers.store_orgs = function(data)
       is_default = v.isDefaultUsername == true,
       is_default_devhub = v.isDefaultDevHubUsername == true,
       expiration_date = v.expirationDate,
+      -- Only present on scratch orgs (`sf org list`'s local auth-file
+      -- fields); used by helpers.delete_scratch_org to resolve which org's
+      -- session to delete the ActiveScratchOrg record through.
+      devhub_username = v.devHubUsername,
+      -- Used by helpers.refresh_sandbox to look up the sandbox's
+      -- SandboxProcess/SandboxName on the Dev Hub (trimmed to 15 chars,
+      -- same as the 18-char `orgId` Salesforce otherwise reports).
+      org_id = v.orgId,
     }
 
     table.insert(helpers.orgs, record)
@@ -514,6 +811,11 @@ helpers.store_orgs = function(data)
   -- statusline's org from disk instead, now that `helpers.orgs` has metadata to
   -- match the alias against.
   Org.refresh_target_org_from_disk()
+
+  -- Re-apply any pending-sandbox-refresh flags: this function rebuilds
+  -- `helpers.orgs` from scratch, which would otherwise silently drop the
+  -- flag `helpers.mark_sandbox_refresh_pending` set on the previous table.
+  helpers.seed_sandbox_refresh_pending_flags()
 
   -- Snapshot for next session: `with_orgs` seeds instantly from this on a
   -- cold start instead of blocking on `sf org list` before it can even

@@ -212,7 +212,15 @@ end
 function CommandBuilder:buildAsTable()
   self:validate()
 
-  local cmd_tbl = { self.base_cmd, self.command, self.action }
+  -- `self.action`/subactions may be multi-word (e.g. "delete sandbox",
+  -- "retrieve start") -- `build()` relies on a shell to re-split a single
+  -- space-joined string, but a table command runs with no shell (see
+  -- vim.system/jobstart with a list arg), so each word must be its own
+  -- argv entry here or the CLI sees one bogus combined argument.
+  local cmd_tbl = { self.base_cmd, self.command }
+  for _, word in ipairs(vim.split(self.action, " ", { trimempty = true })) do
+    table.insert(cmd_tbl, word)
+  end
 
   if #self.subactions > 0 then
     for _, subaction in ipairs(self.subactions) do

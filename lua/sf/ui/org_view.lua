@@ -145,11 +145,23 @@ function org_view.render_list_lines(records)
       end
     end
 
-    lines[i] = org_part .. user_part .. expiry_part
+    -- Set by Org.refresh_sandbox (see helpers.mark_sandbox_refresh_pending)
+    -- -- there's no status polling yet, so this just reflects "a refresh
+    -- was requested", not "a refresh is confirmed still running".
+    local refresh_part = record.sandbox_refresh_pending and "  refreshing..." or ""
+
+    lines[i] = org_part .. user_part .. expiry_part .. refresh_part
     line_hls[i] = {
       { group = org_view.highlight_for(record), col_start = 0, col_end = #org_part },
       { group = "SfFooter", col_start = #org_part, col_end = #org_part + #user_part },
     }
+    if refresh_part ~= "" then
+      table.insert(line_hls[i], {
+        group = "SfWarn",
+        col_start = #org_part + #user_part + #expiry_part,
+        col_end = #lines[i],
+      })
+    end
   end
 
   return lines, line_hls

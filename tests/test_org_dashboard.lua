@@ -1344,6 +1344,156 @@ test_set["D on logs tab: downloads without opening or closing the dashboard, so 
   eq(still_open, 2)
 end
 
+test_set["D outside logs tab: refuses a prod org without prompting"] = function()
+  child.lua([[
+    util = require("sf.util")
+    Org = require("sf.org")
+
+    _G.err_msg = nil
+    util.show_err = function(msg) _G.err_msg = msg end
+    vim.ui.input = function() error("must not prompt for a prod org") end
+    Org.delete_org = function() error("must not be called for a prod org") end
+
+    records = {
+      { alias = "prod1", username = "user1", is_default = true, is_default_devhub = false, is_prod = true, is_scratch = false, is_sandbox = false, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("D")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  expect.match(child.lua_get([[_G.err_msg]]), "scratch orgs and sandboxes")
+end
+
+test_set["D outside logs tab: a 'n' answer cancels without deleting"] = function()
+  child.lua([[
+    Org = require("sf.org")
+    vim.ui.input = function(_, cb) cb("n") end
+    Org.delete_org = function() error("must not be called when the answer isn't y") end
+
+    records = {
+      { alias = "scratch1", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_scratch = true, is_sandbox = false, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("D")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  -- Reaching here without the error above firing is the assertion; nothing
+  -- else to check.
+end
+
+test_set["D outside logs tab: a 'y' answer deletes the org under the cursor and repaints the list"] = function()
+  child.lua([[
+    Org = require("sf.org")
+    vim.ui.input = function(_, cb) cb("y") end
+
+    _G.deleted_alias = nil
+    Org.delete_org = function(record, on_done)
+      _G.deleted_alias = record.alias
+      on_done()
+    end
+
+    records = {
+      { alias = "sandbox1", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_scratch = false, is_sandbox = true, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("D")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  eq(child.lua_get([[_G.deleted_alias]]), "sandbox1")
+end
+
+test_set["? help: opens an overlay with descriptions longer than the shortened footer labels, and toggles closed"] = function()
+  child.lua([[
+    records = {
+      { alias = "org1", username = "user1", is_default = true, is_default_devhub = false, is_prod = true, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  local windows_before = child.lua_get([[#vim.api.nvim_list_wins()]])
+
+  child.lua([[vim.api.nvim_input("?")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  local windows_during = child.lua_get([[#vim.api.nvim_list_wins()]])
+  eq(windows_during, windows_before + 1)
+
+  local help_text = child.lua([[
+    local lines
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      local text = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+      if text:find("Set local target org", 1, true) then
+        lines = text
+      end
+    end
+    return lines
+  ]])
+  expect.match(help_text, "Set local target org")
+  expect.match(help_text, "Delete org %b()")
+
+  child.lua([[vim.api.nvim_input("?")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  local windows_after = child.lua_get([[#vim.api.nvim_list_wins()]])
+  eq(windows_after, windows_before)
+end
+
+test_set["R: refuses a non-sandbox without prompting"] = function()
+  child.lua([[
+    util = require("sf.util")
+    Org = require("sf.org")
+
+    _G.err_msg = nil
+    util.show_err = function(msg) _G.err_msg = msg end
+    vim.ui.input = function() error("must not prompt for a non-sandbox") end
+    Org.refresh_sandbox = function() error("must not be called for a non-sandbox") end
+
+    records = {
+      { alias = "scratch1", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_scratch = true, is_sandbox = false, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("R")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  expect.match(child.lua_get([[_G.err_msg]]), "sandboxes can be refreshed")
+end
+
+test_set["R on a sandbox: prompts, then requests a refresh through Org.refresh_sandbox on 'y'"] = function()
+  child.lua([[
+    Org = require("sf.org")
+    vim.ui.input = function(_, cb) cb("y") end
+
+    _G.refreshed_alias = nil
+    Org.refresh_sandbox = function(record, on_done)
+      _G.refreshed_alias = record.alias
+      on_done()
+    end
+
+    records = {
+      { alias = "sandbox1", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_scratch = false, is_sandbox = true, expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("R")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  eq(child.lua_get([[_G.refreshed_alias]]), "sandbox1")
+end
+
 test_set["navigate: opens a fresh dashboard positioned on the given org + tab"] = function()
   child.lua([[
     Org = require("sf.org")

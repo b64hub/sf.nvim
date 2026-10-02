@@ -378,4 +378,39 @@ test_set["download_log_body: hits the ApexLog Body endpoint for the given log id
   eq(joined:find("Authorization: Bearer tok", 1, true) ~= nil, true)
 end
 
+test_set["delete_std: hits the standard (non-Tooling) sobjects endpoint, not /tooling/"] = function()
+  child.lua([[
+    local captured_args
+    local original_call = Util.silent_system_call
+    Util.silent_system_call = function(cmd)
+      captured_args = cmd
+    end
+    Api.delete_std({ url = "https://x", api_version = "60.0", token = "tok" }, "ActiveScratchOrg", "0GQxyz", function() end)
+    Util.silent_system_call = original_call
+    _G._captured = captured_args
+  ]])
+
+  local cmd = child.lua_get([[_G._captured]])
+  local joined = table.concat(cmd, " ")
+  eq(joined:find("https://x/services/data/v60.0/sobjects/ActiveScratchOrg/0GQxyz", 1, true) ~= nil, true)
+  eq(joined:find("/tooling/", 1, true) ~= nil, false)
+  eq(joined:find("-X DELETE", 1, true) ~= nil, true)
+end
+
+test_set["delete_std: ok is true only on HTTP 204"] = function()
+  child.lua([[
+    local original_call = Util.silent_system_call
+    Util.silent_system_call = function(_, _, _, cb)
+      cb({ stdout = "\nHTTPSTATUS:204" })
+    end
+    _G._ok = nil
+    Api.delete_std({ url = "https://x", api_version = "60.0", token = "tok" }, "ActiveScratchOrg", "0GQxyz", function(ok)
+      _G._ok = ok
+    end)
+    Util.silent_system_call = original_call
+  ]])
+
+  eq(child.lua_get([[_G._ok]]), true)
+end
+
 return test_set

@@ -131,6 +131,8 @@ function dashboard.open(records, opts)
     for _, view_desc in ipairs(dashboard_views.action_views("left")) do
       table.insert(parts, view_desc.key .. " " .. view_desc.label)
     end
+    table.insert(parts, "D delete")
+    table.insert(parts, "? help")
     return " " .. table.concat(parts, " · ") .. " "
   end
 
@@ -143,10 +145,11 @@ function dashboard.open(records, opts)
     end
     if session.active_view_id == "logs" then
       table.insert(parts, "<CR> open")
-      table.insert(parts, "D download")
+      table.insert(parts, "D dl")
     end
     table.insert(parts, "f filter")
     table.insert(parts, "r refresh")
+    table.insert(parts, "? help")
     table.insert(parts, "q close")
     return " " .. table.concat(parts, " · ") .. " "
   end
@@ -545,9 +548,14 @@ function dashboard.open(records, opts)
     end
   end
 
+  -- Forward-declared: `close` below closes the help float too (if open),
+  -- but the float itself is built lazily by `toggle_help` further down.
+  local close_help
+
   local close = function()
     session.generation = session.generation + 1
     stop_spinner()
+    close_help()
     if vim.api.nvim_win_is_valid(session.list_window) then
       vim.api.nvim_win_close(session.list_window, true)
     end
@@ -568,6 +576,107 @@ function dashboard.open(records, opts)
 
   vim.keymap.set("n", "q", close, { buffer = session.list_buffer, nowait = true })
   vim.keymap.set("n", "<Esc>", close, { buffer = session.list_buffer, nowait = true })
+
+  -- "?" help overlay: the footers only have room for short labels (that
+  -- was the whole point of shortening them), so this is where the full
+  -- description for every key lives. Built from the same view registry
+  -- the footers/winbar already draw from, plus the handful of keys that
+  -- have no descriptor (scroll/cycle/logs/close) -- one source of truth,
+  -- nothing to keep in sync by hand when a key changes.
+  local help_window = nil
+
+  close_help = function()
+    if help_window and vim.api.nvim_win_is_valid(help_window) then
+      vim.api.nvim_win_close(help_window, true)
+    end
+    help_window = nil
+  end
+
+  local build_help_lines = function()
+    local lines = {}
+    local add = function(key, desc)
+      table.insert(lines, string.format("  %-18s %s", key, desc))
+    end
+
+    table.insert(lines, "Tabs")
+    for _, view_desc in ipairs(dashboard_views.tab_views()) do
+      add(view_desc.key, view_desc.label)
+    end
+    add("<Left>/<Right>, h/l", "Cycle tabs")
+    table.insert(lines, "")
+
+    table.insert(lines, "Org actions")
+    for _, view_desc in ipairs(dashboard_views.action_views("left")) do
+      add(view_desc.key, view_desc.help or view_desc.label)
+    end
+    add("D", "Delete org (scratch/sandbox only, asks to confirm)")
+    table.insert(lines, "")
+
+    table.insert(lines, "View actions")
+    for _, view_desc in ipairs(dashboard_views.action_views("right")) do
+      add(view_desc.key, view_desc.help or view_desc.label)
+    end
+    add("f", "Filter (logs view)")
+    add("r", "Refresh org list")
+    add("<C-d>/<C-u>", "Scroll view half page")
+    add("<Up>/<Down>", "Scroll view one line")
+    table.insert(lines, "")
+
+    table.insert(lines, "Logs tab")
+    add("<CR>", "Download log under cursor, open it, close dashboard")
+    add("D", "Download log under cursor")
+    table.insert(lines, "")
+
+    table.insert(lines, "Other")
+    add("?", "Toggle this help")
+    add("q, <Esc>", "Close dashboard")
+
+    return lines
+  end
+
+  local toggle_help = function()
+    if help_window and vim.api.nvim_win_is_valid(help_window) then
+      return close_help()
+    end
+
+    local lines = build_help_lines()
+    local help_buffer = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(help_buffer, 0, -1, false, lines)
+    vim.bo[help_buffer].modifiable = false
+    vim.bo[help_buffer].filetype = "SfOrgDashboard"
+    -- Toggled open/closed repeatedly within one dashboard session (unlike
+    -- list_buffer/view_buffer, created once) -- wipe it on close instead
+    -- of piling up an orphaned scratch buffer per toggle.
+    vim.bo[help_buffer].bufhidden = "wipe"
+
+    local width = 0
+    for _, line in ipairs(lines) do
+      width = math.max(width, #line)
+    end
+    width = math.min(width, vim.o.columns - 4)
+    local height = math.min(#lines, vim.o.lines - 4)
+
+    help_window = vim.api.nvim_open_win(help_buffer, true, {
+      relative = "editor",
+      row = math.floor((vim.o.lines - height - 2) / 2),
+      col = math.floor((vim.o.columns - width - 2) / 2),
+      width = width,
+      height = height,
+      style = "minimal",
+      border = ui_config.border or "rounded",
+      title = { { " Keys ", "SfTitle" } },
+      title_pos = "left",
+      zindex = 60,
+    })
+    vim.api.nvim_win_set_option(help_window, "winhl", "Normal:SfNormal,FloatBorder:SfBorder,FloatTitle:SfTitle")
+
+    for _, key in ipairs({ "q", "<Esc>", "?" }) do
+      vim.keymap.set("n", key, close_help, { buffer = help_buffer, nowait = true })
+    end
+  end
+
+  vim.keymap.set("n", "?", toggle_help, { buffer = session.list_buffer, nowait = true })
+  vim.keymap.set("n", "?", toggle_help, { buffer = session.view_buffer, nowait = true })
 
   -- Refresh key: clears cache, bumps generation, re-runs fetch_org_list.
   -- Overlapping fetch-org-list calls now resolve via last-writer-wins in
@@ -718,17 +827,45 @@ function dashboard.open(records, opts)
     end, record.alias)
   end
 
+  -- Delete the org under the list cursor (scratch orgs and sandboxes
+  -- only) after an explicit y/N confirmation -- a destructive, no-undo
+  -- action, so it never fires on a bare keypress. Shares the "D" key with
+  -- download_selected_log below: the logs tab already claims "D" for
+  -- "download log", so this only runs when some other tab is active.
+  local delete_selected_org = function()
+    local record = current_record()
+    if not record then
+      return
+    end
+    if not record.is_scratch and not record.is_sandbox then
+      return util.show_err("Only scratch orgs and sandboxes can be deleted.")
+    end
+
+    local kind = record.is_scratch and "scratch org" or "sandbox"
+    vim.ui.input({ prompt = string.format("Delete %s '%s'? (y/N): ", kind, record.alias) }, function(input)
+      if input ~= "y" and input ~= "Y" then
+        return
+      end
+      Org.delete_org(record, repaint_list)
+    end)
+  end
+
   -- <CR>: download + open + close (you're done browsing, you want to read
   -- this one log). D (capital -- lowercase "d" is already the "details"
   -- tab shortcut, registered below): download only, dashboard stays open,
   -- so multiple logs can be grabbed in one go without reopening the
-  -- dashboard each time.
+  -- dashboard each time. Outside the logs tab, D deletes the selected org
+  -- instead (see delete_selected_org above).
   for _, buffer in ipairs({ session.list_buffer, session.view_buffer }) do
     vim.keymap.set("n", "<CR>", function()
       download_selected_log({ open = true, close = true })
     end, { buffer = buffer, nowait = true })
     vim.keymap.set("n", "D", function()
-      download_selected_log({ open = false, close = false })
+      if session.active_view_id == "logs" then
+        download_selected_log({ open = false, close = false })
+      else
+        delete_selected_org()
+      end
     end, { buffer = buffer, nowait = true })
   end
 

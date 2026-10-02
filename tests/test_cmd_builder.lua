@@ -183,4 +183,21 @@ T["setup()"]["matches Term.save_and_push's default push command (bare -c flag al
   eq(result, expected)
 end
 
+T["buildAsTable()"] = new_set()
+
+T["buildAsTable()"]["splits a multi-word action into separate argv entries"] = function()
+  -- No shell re-splits a table command (vim.system/jobstart with a list
+  -- arg) -- a single "delete sandbox" entry would be passed to the CLI as
+  -- one bogus argument instead of two ("delete", "sandbox").
+  local result =
+    child.lua_get([[B:new():cmd("org"):act("delete sandbox"):addParams("-p"):set_org("t_org"):buildAsTable()]])
+  eq(result, { "sf", "org", "delete", "sandbox", "-p", "-o", "t_org" })
+end
+
+T["buildAsTable()"]["single-word action still produces one argv entry"] = function()
+  local result =
+    child.lua_get([[B:new():cmd("org"):act("display"):addParams("--json"):set_org("t_org"):buildAsTable()]])
+  eq(result, { "sf", "org", "display", "--json", "-o", "t_org" })
+end
+
 return T

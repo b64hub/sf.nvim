@@ -501,7 +501,8 @@ local views = {
   {
     id = "set_local_default",
     key = "L",
-    label = "Set Local Default",
+    label = "Local",
+    help = "Set local target org",
     -- Org-scoped action: shown in the left (org list) pane's footer.
     pane = "left",
     fetch = nil,
@@ -514,7 +515,8 @@ local views = {
   {
     id = "set_global_default",
     key = "G",
-    label = "Set Global Default",
+    label = "Global",
+    help = "Set global target org",
     -- Org-scoped action: shown in the left (org list) pane's footer.
     pane = "left",
     fetch = nil,
@@ -529,12 +531,36 @@ local views = {
     id = "open_org",
     key = "o",
     label = "Open",
+    help = "Open org in browser",
     -- Org-scoped action: shown in the left (org list) pane's footer.
     pane = "left",
     fetch = nil,
     render = nil,
     action = function(record, _)
       Org.open_org(record.alias)
+    end,
+  },
+  {
+    id = "refresh_sandbox",
+    key = "R",
+    label = "Refresh",
+    help = "Refresh sandbox from its default Dev Hub (sandboxes only)",
+    -- Org-scoped action: shown in the left (org list) pane's footer.
+    pane = "left",
+    fetch = nil,
+    render = nil,
+    action = function(record, dashboard_api)
+      if not record.is_sandbox then
+        return util.show_err("Only sandboxes can be refreshed.")
+      end
+
+      local prompt = string.format("Refresh sandbox '%s' from its default Dev Hub? (y/N): ", record.alias)
+      vim.ui.input({ prompt = prompt }, function(input)
+        if input ~= "y" and input ~= "Y" then
+          return
+        end
+        Org.refresh_sandbox(record, dashboard_api.repaint_list)
+      end)
     end,
   },
   {
@@ -583,7 +609,8 @@ local views = {
   {
     id = "enable_logging",
     key = "e",
-    label = "Enable Logging",
+    label = "Debug",
+    help = "Enable replay logging",
     -- View-scoped action (not org-identity related): shown in the right
     -- (detail view) pane's footer alongside refresh/filter/close.
     pane = "right",

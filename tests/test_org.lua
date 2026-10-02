@@ -131,6 +131,16 @@ T["store_orgs"]["upserts idempotently: calling it twice with the same payload do
   ]])
   eq(child.lua_get([[#H.orgs]]), 1)
 end
+
+T["store_orgs"]["carries devHubUsername through as devhub_username, used later to delete via API"] = function()
+  child.lua([[
+    H = M.__test
+    H.orgs = {}
+    local payload = { '{"result":{"nonScratchOrgs":[],"scratchOrgs":[{"alias":"scratch1","username":"u@scratch","isScratch":true,"isSandbox":false,"isDefaultUsername":false,"isDefaultDevHubUsername":false,"devHubUsername":"hub@example.com"}]}}' }
+    H.store_orgs(payload)
+  ]])
+  eq(child.lua_get([[H.orgs[1].devhub_username]]), "hub@example.com")
+end
 --
 -- T['get()']['target_org empty then err'] = function()
 --   expect.error(function() child.lua([[M.get()]]) end)
@@ -885,6 +895,443 @@ T["download_log"]["does not call on_done when the session can't be resolved"] = 
   ]])
 
   eq(child.lua_get([[_G._on_done_called]]), false)
+end
+
+T["delete_org"] = new_set({
+  hooks = {
+    pre_case = function()
+      child.lua([[
+        H = M.__test
+        util = require("sf.util")
+        util.show = function() end
+        util.show_err = function() end
+        util.write_cache_json = function() end
+        util.silent_job_call = function() end
+      ]])
+    end,
+  },
+})
+
+T["delete_org"]["refuses a prod org without calling the API or CLI"] = function()
+  child.lua([[
+    rest_api = require("sf.sub.rest_api")
+    rest_api.get_session = function() error("must not be called for a prod org") end
+
+    _G._err = nil
+    util.show_err = function(msg) _G._err = msg end
+
+    H.orgs = { { alias = "prod1", is_scratch = false, is_sandbox = false, is_prod = true } }
+    M.delete_org(H.orgs[1], function() error("on_done must not fire") end)
+  ]])
+
+  expect.match(child.lua_get([[_G._err]]), "scratch orgs and sandboxes")
+end
+
+T["delete_org"]["scratch org: refuses when the record has no devhub_username"] = function()
+  child.lua([[
+    rest_api = require("sf.sub.rest_api")
+    rest_api.get_session = function() error("must not be called without a devhub_username") end
+
+    _G._err = nil
+    util.show_err = function(msg) _G._err = msg end
+
+    H.orgs = { { alias = "scratch1", username = "u@scratch", is_scratch = true, is_sandbox = false } }
+    M.delete_org(H.orgs[1], function() error("on_done must not fire") end)
+  ]])
+
+  expect.match(child.lua_get([[_G._err]]), "Dev Hub")
+end
+
+T["delete_org"]["scratch org: happy path queries ActiveScratchOrg on the devhub session, deletes it, cleans up locally"] = function()
+  child.lua([[
+    rest_api = require("sf.sub.rest_api")
+
+    _G._session_alias = nil
+    rest_api.get_session = function(alias, cb)
+      _G._session_alias = alias
+      cb({ token = "tok", url = "https://hub", api_version = "60.0" }, nil)
+    end
+
+    _G._query_soql = nil
+    rest_api.query_std = function(_, soql, cb)
+      _G._query_soql = soql
+      cb({ { Id = "1SR000000000001" } }, nil)
+    end
+
+    _G._delete_sobject, _G._delete_id = nil, nil
+    rest_api.delete_std = function(_, sobject, id, cb)
+      _G._delete_sobject, _G._delete_id = sobject, id
+      cb(true, nil)
+    end
+
+    _G._logout_cmd = nil
+    util.silent_job_call = function(cmd) _G._logout_cmd = cmd end
+
+    H.orgs = {
+      { alias = "scratch1", username = "u@scratch", is_scratch = true, is_sandbox = false, devhub_username = "hub@example.com" },
+    }
+
+    _G._on_done_called = false
+    M.delete_org(H.orgs[1], function() _G._on_done_called = true end)
+  ]])
+
+  eq(child.lua_get([[_G._session_alias]]), "hub@example.com")
+  expect.match(child.lua_get([[_G._query_soql]]), "ActiveScratchOrg")
+  expect.match(child.lua_get([[_G._query_soql]]), "u@scratch")
+  eq(child.lua_get([[_G._delete_sobject]]), "ActiveScratchOrg")
+  eq(child.lua_get([[_G._delete_id]]), "1SR000000000001")
+  eq(child.lua_get([[_G._on_done_called]]), true)
+  eq(child.lua_get([[#H.orgs]]), 0) -- removed from the in-memory cache
+  expect.match(child.lua_get([[_G._logout_cmd]]), "logout")
+end
+
+T["delete_org"]["scratch org: a delete failure does not touch the local cache or fire on_done"] = function()
+  child.lua([[
+    rest_api = require("sf.sub.rest_api")
+    rest_api.get_session = function(_, cb) cb({ token = "tok", url = "https://hub", api_version = "60.0" }, nil) end
+    rest_api.query_std = function(_, _, cb) cb({ { Id = "1SR000000000001" } }, nil) end
+    rest_api.delete_std = function(_, _, _, cb) cb(false, "INSUFFICIENT_ACCESS") end
+
+    H.orgs = {
+      { alias = "scratch1", username = "u@scratch", is_scratch = true, is_sandbox = false, devhub_username = "hub@example.com" },
+    }
+
+    _G._on_done_called = false
+    M.delete_org(H.orgs[1], function() _G._on_done_called = true end)
+  ]])
+
+  eq(child.lua_get([[_G._on_done_called]]), false)
+  eq(child.lua_get([[#H.orgs]]), 1)
+end
+
+T["delete_org"]["sandbox: shells out to `sf org delete sandbox` and cleans up the cache on success"] = function()
+  child.lua([[
+    _G._captured_cmd = nil
+    util.system_call = function(cmd, _, _, cb)
+      _G._captured_cmd = cmd
+      cb()
+    end
+
+    H.orgs = { { alias = "sandbox1", is_scratch = false, is_sandbox = true } }
+
+    _G._on_done_called = false
+    M.delete_org(H.orgs[1], function() _G._on_done_called = true end)
+  ]])
+
+  eq(child.lua_get([[_G._captured_cmd]]), { "sf", "org", "delete", "sandbox", "-p", "-o", "sandbox1" })
+  eq(child.lua_get([[_G._on_done_called]]), true)
+  eq(child.lua_get([[#H.orgs]]), 0)
+end
+
+T["delete_org"]["sandbox: a failed delete does not fire on_done or touch the cache"] = function()
+  child.lua([[
+    util.system_call = function(cmd, _, err_msg) end -- cb never invoked: non-zero exit
+
+    H.orgs = { { alias = "sandbox1", is_scratch = false, is_sandbox = true } }
+
+    _G._on_done_called = false
+    M.delete_org(H.orgs[1], function() _G._on_done_called = true end)
+  ]])
+
+  eq(child.lua_get([[_G._on_done_called]]), false)
+  eq(child.lua_get([[#H.orgs]]), 1)
+end
+
+T["remove_org_from_cache"] = new_set({
+  hooks = {
+    pre_case = function()
+      child.lua([[
+        H = M.__test
+        util = require("sf.util")
+        H.orgs = { { alias = "one" }, { alias = "two" }, { alias = "three" } }
+      ]])
+    end,
+  },
+})
+
+T["remove_org_from_cache"]["removes only the matching alias and persists the snapshot"] = function()
+  child.lua([[
+    _G._written = nil
+    util.write_cache_json = function(_, data) _G._written = data end
+    H.remove_org_from_cache("two")
+  ]])
+
+  eq(child.lua_get([[#H.orgs]]), 2)
+  eq(child.lua_get([[H.orgs[1].alias]]), "one")
+  eq(child.lua_get([[H.orgs[2].alias]]), "three")
+  eq(child.lua_get([[#_G._written]]), 2)
+end
+
+T["remove_org_from_cache"]["no-op when the alias isn't found"] = function()
+  child.lua([[
+    util.write_cache_json = function() end
+    H.remove_org_from_cache("does-not-exist")
+  ]])
+
+  eq(child.lua_get([[#H.orgs]]), 3)
+end
+
+T["refresh_sandbox"] = new_set({
+  hooks = {
+    pre_case = function()
+      child.lua([[
+        H = M.__test
+        util = require("sf.util")
+        util.show = function() end
+        util.show_err = function() end
+      ]])
+    end,
+  },
+})
+
+T["refresh_sandbox"]["refuses a non-sandbox record without touching the Dev Hub"] = function()
+  child.lua([[
+    rest_api = require("sf.sub.rest_api")
+    rest_api.get_session = function() error("must not be called for a non-sandbox") end
+
+    _G._err = nil
+    util.show_err = function(msg) _G._err = msg end
+
+    H.orgs = { { alias = "scratch1", is_scratch = true, is_sandbox = false } }
+    M.refresh_sandbox(H.orgs[1], function() error("on_done must not fire") end)
+  ]])
+
+  expect.match(child.lua_get([[_G._err]]), "sandboxes can be refreshed")
+end
+
+T["refresh_sandbox"]["errors when no default Dev Hub is configured"] = function()
+  child.lua([[
+    rest_api = require("sf.sub.rest_api")
+    rest_api.get_session = function() error("must not be called without a default devhub") end
+
+    _G._err = nil
+    util.show_err = function(msg) _G._err = msg end
+
+    H.orgs = {
+      { alias = "sandbox1", is_scratch = false, is_sandbox = true, org_id = "00D000000000001EAA" },
+      { alias = "hub1", is_default_devhub = false },
+    }
+    M.refresh_sandbox(H.orgs[1], function() error("on_done must not fire") end)
+  ]])
+
+  expect.match(child.lua_get([[_G._err]]), "No default Dev Hub")
+end
+
+T["refresh_sandbox"]["errors when the default Dev Hub has no matching SandboxProcess (wrong hub)"] = function()
+  child.lua([[
+    rest_api = require("sf.sub.rest_api")
+    rest_api.get_session = function(_, cb) cb({ token = "tok", url = "https://hub", api_version = "60.0" }, nil) end
+    rest_api.query = function(_, _, cb) cb({}, nil) end
+
+    _G._err = nil
+    util.show_err = function(msg) _G._err = msg end
+
+    H.orgs = {
+      { alias = "sandbox1", is_scratch = false, is_sandbox = true, org_id = "00D000000000001EAA" },
+      { alias = "hub1", is_default_devhub = true },
+    }
+    M.refresh_sandbox(H.orgs[1], function() error("on_done must not fire") end)
+  ]])
+
+  expect.match(child.lua_get([[_G._err]]), "right Dev Hub")
+end
+
+T["refresh_sandbox"]["happy path: looks up SandboxName via SandboxOrganization and shells out --async"] = function()
+  child.lua([[
+    rest_api = require("sf.sub.rest_api")
+
+    _G._session_alias = nil
+    rest_api.get_session = function(alias, cb)
+      _G._session_alias = alias
+      cb({ token = "tok", url = "https://hub", api_version = "60.0" }, nil)
+    end
+
+    _G._query_soql = nil
+    rest_api.query = function(_, soql, cb)
+      _G._query_soql = soql
+      cb({ { SandboxName = "dev1" } }, nil)
+    end
+
+    _G._captured_cmd = nil
+    util.system_call = function(cmd, _, _, cb)
+      _G._captured_cmd = cmd
+      cb()
+    end
+
+    H.orgs = {
+      { alias = "sandbox1", is_scratch = false, is_sandbox = true, org_id = "00D000000000001EAAQ" },
+      { alias = "hub1", is_default_devhub = true },
+    }
+
+    _G._on_done_called = false
+    M.refresh_sandbox(H.orgs[1], function() _G._on_done_called = true end)
+  ]])
+
+  eq(child.lua_get([[_G._session_alias]]), "hub1")
+  expect.match(child.lua_get([[_G._query_soql]]), "SandboxProcess")
+  expect.match(child.lua_get([[_G._query_soql]]), "00D000000000001") -- trimmed to 15 chars
+  eq(
+    child.lua_get([[_G._captured_cmd]]),
+    { "sf", "org", "refresh", "sandbox", "-n", "dev1", "--async", "-p", "-o", "hub1" }
+  )
+  eq(child.lua_get([[_G._on_done_called]]), true)
+end
+
+T["refresh_sandbox"]["happy path: marks the sandbox pending in-memory and on disk"] = function()
+  child.lua([[
+    rest_api = require("sf.sub.rest_api")
+    rest_api.get_session = function(_, cb) cb({ token = "tok", url = "https://hub", api_version = "60.0" }, nil) end
+    rest_api.query = function(_, _, cb) cb({ { SandboxName = "dev1" } }, nil) end
+    util.system_call = function(_, _, _, cb) cb() end
+
+    util.read_cache_json = function() return nil end
+    _G._written_file, _G._written_data = nil, nil
+    util.write_cache_json = function(file_name, data)
+      _G._written_file, _G._written_data = file_name, data
+    end
+
+    H.orgs = {
+      { alias = "sandbox1", is_scratch = false, is_sandbox = true, org_id = "00D000000000001EAAQ" },
+      { alias = "hub1", is_default_devhub = true },
+    }
+
+    M.refresh_sandbox(H.orgs[1], function() end)
+  ]])
+
+  eq(child.lua_get([[H.orgs[1].sandbox_refresh_pending]]), true)
+  eq(child.lua_get([[_G._written_file]]), child.lua_get([[H.SANDBOX_REFRESH_CACHE_FILE]]))
+  eq(child.lua_get([[_G._written_data.sandbox1.devhub_alias]]), "hub1")
+  eq(child.lua_get([[_G._written_data.sandbox1.sandbox_name]]), "dev1")
+end
+
+T["mark_sandbox_refresh_pending"] = new_set({
+  hooks = {
+    pre_case = function()
+      child.lua([[
+        H = M.__test
+        util = require("sf.util")
+      ]])
+    end,
+  },
+})
+
+T["mark_sandbox_refresh_pending"]["flags the in-memory record and merges a new entry into the disk cache"] = function()
+  child.lua([[
+    H.orgs = { { alias = "sandbox1" } }
+    util.read_cache_json = function() return { other_alias = { devhub_alias = "hub0", sandbox_name = "x", started_at = 1 } } end
+    _G._written = nil
+    util.write_cache_json = function(_, data) _G._written = data end
+
+    H.mark_sandbox_refresh_pending("sandbox1", "hub1", "dev1")
+  ]])
+
+  eq(child.lua_get([[H.orgs[1].sandbox_refresh_pending]]), true)
+  -- The pre-existing entry for a different alias is preserved, not clobbered.
+  eq(child.lua_get([[_G._written.other_alias.devhub_alias]]), "hub0")
+  eq(child.lua_get([[_G._written.sandbox1.devhub_alias]]), "hub1")
+  eq(child.lua_get([[_G._written.sandbox1.sandbox_name]]), "dev1")
+end
+
+T["mark_sandbox_refresh_pending"]["no-op on the in-memory side when the alias isn't in helpers.orgs"] = function()
+  child.lua([[
+    H.orgs = {}
+    util.read_cache_json = function() return nil end
+    util.write_cache_json = function() end
+    H.mark_sandbox_refresh_pending("does-not-exist", "hub1", "dev1")
+  ]])
+  -- Reaching here without erroring is the assertion.
+end
+
+T["clear_sandbox_refresh_pending"] = new_set({
+  hooks = {
+    pre_case = function()
+      child.lua([[
+        H = M.__test
+        util = require("sf.util")
+      ]])
+    end,
+  },
+})
+
+T["clear_sandbox_refresh_pending"]["unflags the in-memory record and removes only that alias from the disk cache"] = function()
+  child.lua([[
+    H.orgs = { { alias = "sandbox1", sandbox_refresh_pending = true } }
+    util.read_cache_json = function()
+      return {
+        sandbox1 = { devhub_alias = "hub1", sandbox_name = "dev1", started_at = 1 },
+        other_alias = { devhub_alias = "hub0", sandbox_name = "x", started_at = 1 },
+      }
+    end
+    _G._written = nil
+    util.write_cache_json = function(_, data) _G._written = data end
+
+    H.clear_sandbox_refresh_pending("sandbox1")
+  ]])
+
+  eq(child.lua_get([[H.orgs[1].sandbox_refresh_pending]]), vim.NIL)
+  eq(child.lua_get([[_G._written.sandbox1]]), vim.NIL)
+  eq(child.lua_get([[_G._written.other_alias.devhub_alias]]), "hub0")
+end
+
+T["seed_sandbox_refresh_pending_flags / store_orgs"] = new_set({
+  hooks = {
+    pre_case = mock_test,
+  },
+})
+
+T["seed_sandbox_refresh_pending_flags / store_orgs"]["store_orgs re-applies a cached pending flag onto the freshly built record"] = function()
+  child.lua([[
+    H = M.__test
+    H.orgs = {}
+    util = require("sf.util")
+    util.read_cache_json = function(file_name)
+      if file_name == H.SANDBOX_REFRESH_CACHE_FILE then
+        return { sandbox1 = { devhub_alias = "hub1", sandbox_name = "dev1", started_at = 1 } }
+      end
+      return nil
+    end
+    util.write_cache_json = function() end
+
+    local payload = {
+      '{"result":{"nonScratchOrgs":[{"alias":"sandbox1","username":"u@sandbox","isScratch":false,"isSandbox":true,"isDefaultUsername":false,"isDefaultDevHubUsername":false}],"scratchOrgs":[]}}',
+    }
+    H.store_orgs(payload)
+  ]])
+
+  eq(child.lua_get([[H.orgs[1].sandbox_refresh_pending]]), true)
+end
+
+T["seed_sandbox_refresh_pending_flags / store_orgs"]["leaves records with no cached entry unflagged"] = function()
+  child.lua([[
+    H = M.__test
+    H.orgs = {}
+    util = require("sf.util")
+    util.read_cache_json = function() return nil end
+    util.write_cache_json = function() end
+
+    local payload = {
+      '{"result":{"nonScratchOrgs":[{"alias":"sandbox1","username":"u@sandbox","isScratch":false,"isSandbox":true,"isDefaultUsername":false,"isDefaultDevHubUsername":false}],"scratchOrgs":[]}}',
+    }
+    H.store_orgs(payload)
+  ]])
+
+  eq(child.lua_get([[H.orgs[1].sandbox_refresh_pending]]), vim.NIL)
+end
+
+T["clear_sandbox_refresh_status"] = new_set()
+
+T["clear_sandbox_refresh_status"]["public wrapper delegates to the helper"] = function()
+  child.lua([[
+    H = M.__test
+    util = require("sf.util")
+    H.orgs = { { alias = "sandbox1", sandbox_refresh_pending = true } }
+    util.read_cache_json = function() return { sandbox1 = { devhub_alias = "hub1", sandbox_name = "dev1", started_at = 1 } } end
+    util.write_cache_json = function() end
+
+    M.clear_sandbox_refresh_status("sandbox1")
+  ]])
+
+  eq(child.lua_get([[H.orgs[1].sandbox_refresh_pending]]), vim.NIL)
 end
 
 return T

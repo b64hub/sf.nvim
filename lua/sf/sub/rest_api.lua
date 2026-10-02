@@ -248,6 +248,27 @@ rest_api.delete = function(session, sobject, id, cb)
   end)
 end
 
+--- Same as `rest_api.delete`, but against the standard (non-Tooling) REST
+--- sobjects endpoint -- needed for objects the Tooling API doesn't expose,
+--- e.g. `ActiveScratchOrg` on the Dev Hub (used by Org.delete_org to
+--- delete a scratch org the same way `sf org delete scratch` does
+--- internally, minus the CLI/Node startup cost).
+---@param session table
+---@param sobject string
+---@param id string
+---@param cb fun(ok: boolean, err: string|nil)
+rest_api.delete_std = function(session, sobject, id, cb)
+  rest_api.curl_json({
+    "-X",
+    "DELETE",
+    string.format("%s/services/data/v%s/sobjects/%s/%s", session.url, session.api_version, sobject, id),
+    "-H",
+    "Authorization: Bearer " .. session.token,
+  }, function(decoded, err)
+    cb(decoded ~= nil and decoded.status == 204, err)
+  end)
+end
+
 --- Executes anonymous Apex via the Tooling API's `executeAnonymous` endpoint
 --- directly, skipping both the CLI's Node startup cost and the terminal
 --- buffer that `sf apex run` needs. Trade-off: this endpoint reports only
