@@ -10,6 +10,7 @@
 local cmd_builder = require("sf.sub.cmd_builder")
 local rest_api = require("sf.sub.rest_api")
 local Icons = require("sf.ui.icons")
+local org_model = require("sf.org_model")
 
 local org_view = {}
 
@@ -19,13 +20,10 @@ org_view.SPINNER_FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 -- Never render these keys from `sf org display --json`, even though they're
 -- in the output. Secrets that should stay in the org's auth context only.
-org_view.REDACT_KEYS = {
-  accessToken = true,
-  refreshToken = true,
-  clientSecret = true,
-  sfdxAuthUrl = true,
-  privateKey = true,
-}
+-- Canonical copy lives in org_model.lua (domain knowledge about Salesforce
+-- org payloads, shared with the disk-persistence allowlist) -- aliased
+-- here so existing callers of `org_view.REDACT_KEYS` keep working.
+org_view.REDACT_KEYS = org_model.REDACT_KEYS
 
 -- Preferred field order for the detail view; any remaining keys returned by
 -- the CLI (except redacted ones) are appended alphabetically after this list.
@@ -45,21 +43,6 @@ org_view.DETAIL_KEY_ORDER = {
   "createdDate",
   "devHubId",
 }
-
----@param record table { is_prod, is_sandbox, is_scratch }
----@return string highlight group name
-function org_view.highlight_for(record)
-  if record.is_prod then
-    return "SfStatusProd"
-  end
-  if record.is_sandbox then
-    return "SfStatusSandbox"
-  end
-  if record.is_scratch then
-    return "SfStatusScratch"
-  end
-  return "SfStatusOrg"
-end
 
 ---@param str string|nil
 ---@param width number
@@ -110,8 +93,13 @@ function org_view.days_until(date_string, now_timestamp)
 end
 
 ---@param records table[]
+---@param target_alias string|nil the current target org's alias, for the
+---  "● default" badge -- "is_default" is never stored on a record (see
+---  org_model.lua), it's resolved by the caller at render time
+---@param devhub_alias string|nil the current default Dev Hub's alias, for
+---  the "◆ default devhub" badge, same reasoning
 ---@return string[] lines, table[] per-line highlight segments
-function org_view.render_list_lines(records)
+function org_view.render_list_lines(records, target_alias, devhub_alias)
   local alias_w, user_w = 0, 0
   for _, record in ipairs(records) do
     alias_w = math.max(alias_w, #(record.alias or ""))
@@ -122,34 +110,37 @@ function org_view.render_list_lines(records)
 
   for i, record in ipairs(records) do
     -- Marker: ● = default target org, ◆ = default devhub, ◈ = both
-    local marker
-    if record.is_default and record.is_default_devhub then
-      marker = "◈ "
-    elseif record.is_default then
-      marker = "● "
-    elseif record.is_default_devhub then
-      marker = "◆ "
-    else
-      marker = "  "
-    end
+    local marker = org_model.badge(record.alias == target_alias, record.alias == devhub_alias)
 
     local org_part = marker .. Icons.CLOUD .. " " .. org_view.pad(record.alias, alias_w)
     local user_part = "  " .. org_view.pad(record.username, user_w)
 
     -- Relative expiry for scratch orgs only; use days_until for short-form display
     local expiry_part = ""
-    if record.is_scratch and record.expiration_date then
+    if org_model.is_scratch(record) and record.expiration_date then
       local relative = org_view.days_until(record.expiration_date)
       if relative then
         expiry_part = "  expires " .. relative
       end
     end
 
-    lines[i] = org_part .. user_part .. expiry_part
+    -- Set by Org.refresh_sandbox (see helpers.mark_sandbox_refresh_pending)
+    -- -- there's no status polling yet, so this just reflects "a refresh
+    -- was requested", not "a refresh is confirmed still running".
+    local refresh_part = record.sandbox_refresh_pending and "  refreshing..." or ""
+
+    lines[i] = org_part .. user_part .. expiry_part .. refresh_part
     line_hls[i] = {
-      { group = org_view.highlight_for(record), col_start = 0, col_end = #org_part },
+      { group = org_model.highlight_group(record), col_start = 0, col_end = #org_part },
       { group = "SfFooter", col_start = #org_part, col_end = #org_part + #user_part },
     }
+    if refresh_part ~= "" then
+      table.insert(line_hls[i], {
+        group = "SfWarn",
+        col_start = #org_part + #user_part + #expiry_part,
+        col_end = #lines[i],
+      })
+    end
   end
 
   return lines, line_hls

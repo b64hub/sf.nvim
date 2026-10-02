@@ -202,6 +202,17 @@ test_set["flatten_package_row: fully populated record"] = function()
   eq(child.lua_get([[flattened.version]]), "2.5")
 end
 
+test_set["flatten_package_row: includes patch version when present"] = function()
+  child.lua([[
+    local record = {
+      SubscriberPackage = { Name = "TestPackage", NamespacePrefix = "testns" },
+      SubscriberPackageVersion = { MajorVersion = 2, MinorVersion = 5, PatchVersion = 3 },
+    }
+    flattened = dashboard_views._flatten_package_row(record)
+  ]])
+  eq(child.lua_get([[flattened.version]]), "2.5.3")
+end
+
 test_set["flatten_package_row: nil namespace prefix falls back to unmanaged"] = function()
   child.lua([[
     local record = {
@@ -727,10 +738,12 @@ test_set["packages render: columns are aligned"] = function()
       local lines, hls = packages_view.render(nil, test_data)
       -- First line is header
       _G.has_header = lines[1]:find("Package", 1, true) ~= nil
-      -- Alignment check: namespace column should start at same position
+      -- Alignment check: namespace column should start at same position.
+      -- Rows are sorted alphabetically by name, so "LongerPackageName"
+      -- (namespace "ns") sorts before "Pkg1" (namespace "ns1").
       if #lines > 2 then
-        local first_ns_col = lines[2]:find("ns1", 1, true)
-        local second_ns_col = lines[3]:find("ns", 1, true)
+        local first_ns_col = lines[2]:find("ns", 1, true)
+        local second_ns_col = lines[3]:find("ns1", 1, true)
         -- Both should find their content, indicating they're properly aligned
         _G.aligned = first_ns_col ~= nil and second_ns_col ~= nil
       else
@@ -744,6 +757,30 @@ test_set["packages render: columns are aligned"] = function()
 
   eq(child.lua_get([[_G.has_header]]), true)
   eq(child.lua_get([[_G.aligned]]), true)
+end
+
+test_set["packages render: sorts rows alphabetically by name"] = function()
+  child.lua([[
+    local packages_view
+    for _, view in ipairs(dashboard_views) do
+      if view.id == "packages" then
+        packages_view = view
+        break
+      end
+    end
+    local data = {
+      { SubscriberPackage = { Name = "Zebra", NamespacePrefix = "z" }, SubscriberPackageVersion = { MajorVersion = 1, MinorVersion = 0, PatchVersion = 0 } },
+      { SubscriberPackage = { Name = "apple", NamespacePrefix = "a" }, SubscriberPackageVersion = { MajorVersion = 1, MinorVersion = 0, PatchVersion = 0 } },
+      { SubscriberPackage = { Name = "Mango", NamespacePrefix = "m" }, SubscriberPackageVersion = { MajorVersion = 1, MinorVersion = 0, PatchVersion = 0 } },
+    }
+    rendered_lines = packages_view.render({}, data)
+  ]])
+  local apple_row = child.lua_get([[rendered_lines[2] ]])
+  local mango_row = child.lua_get([[rendered_lines[3] ]])
+  local zebra_row = child.lua_get([[rendered_lines[4] ]])
+  expect.match(apple_row, "apple")
+  expect.match(mango_row, "Mango")
+  expect.match(zebra_row, "Zebra")
 end
 
 test_set["format_log_line: includes operation field"] = function()

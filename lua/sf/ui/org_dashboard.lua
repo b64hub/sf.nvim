@@ -8,6 +8,7 @@ local Icons = require("sf.ui.icons")
 local Layout = require("sf.ui.layout")
 local org_view = require("sf.ui.org_view")
 local dashboard_views = require("sf.ui.dashboard_views")
+local org_model = require("sf.org_model")
 local Org = require("sf.org")
 local rest_api = require("sf.sub.rest_api")
 
@@ -80,7 +81,7 @@ function dashboard.navigate(records, opts)
 end
 
 --- Open a split-pane dashboard showing orgs on the left, details on the right.
----@param records table[] org records (alias, username, is_scratch, is_sandbox, is_prod, is_default, is_default_devhub, expiration_date)
+---@param records table[] org records (sf.org_model records -- alias, username, org_type, expiration_date, ...)
 ---@param opts table { prompt = string, initial_view_id = string|nil, initial_alias = string|nil }
 function dashboard.open(records, opts)
   if #records == 0 then
@@ -98,7 +99,7 @@ function dashboard.open(records, opts)
     active_session = nil
   end
 
-  local list_lines, list_hls = org_view.render_list_lines(records)
+  local list_lines, list_hls = org_view.render_list_lines(records, util.target_org, Org.get_default_devhub_alias())
 
   local list_buffer = vim.api.nvim_create_buf(false, true)
   vim.bo[list_buffer].filetype = "SfOrgDashboard"
@@ -131,6 +132,8 @@ function dashboard.open(records, opts)
     for _, view_desc in ipairs(dashboard_views.action_views("left")) do
       table.insert(parts, view_desc.key .. " " .. view_desc.label)
     end
+    table.insert(parts, "D delete")
+    table.insert(parts, "? help")
     return " " .. table.concat(parts, " · ") .. " "
   end
 
@@ -143,10 +146,11 @@ function dashboard.open(records, opts)
     end
     if session.active_view_id == "logs" then
       table.insert(parts, "<CR> open")
-      table.insert(parts, "D download")
+      table.insert(parts, "D dl")
     end
     table.insert(parts, "f filter")
     table.insert(parts, "r refresh")
+    table.insert(parts, "? help")
     table.insert(parts, "q close")
     return " " .. table.concat(parts, " · ") .. " "
   end
@@ -355,10 +359,6 @@ function dashboard.open(records, opts)
   -- should have to opt in too, not silently start caching to disk.
   local DISK_CACHEABLE_VIEWS = { details = true, limits = true, packages = true }
 
-  local view_disk_cache_file = function(record, view_id)
-    return string.format("dashboard_%s_%s.json", record.alias, view_id)
-  end
-
   -- Only the "details" fetch can hand back a non-nil result that's still
   -- a total failure (it always calls back with err = nil to avoid
   -- blanking the pane on a partial failure -- see its fetch in
@@ -371,13 +371,34 @@ function dashboard.open(records, opts)
     return true
   end
 
+  -- "details" carries the raw `sf org display` result (result.detail),
+  -- which may include secrets (accessToken, ...) -- rest_api.lua's own
+  -- in-memory cache for that call exists specifically because it must
+  -- never be persisted. Every other cacheable view's result is already
+  -- disk-safe as-is. Route through org_model's allowlist (not the
+  -- REDACT_KEYS denylist org_view's render path uses) so an unknown
+  -- future field fails closed -- dropped, not written -- instead of
+  -- fail-open onto disk.
+  local persistable_view_data = function(view_id, result)
+    if view_id ~= "details" or not result.detail then
+      return result
+    end
+    local safe = vim.deepcopy(result)
+    safe.detail = org_model.persistable_detail(result.detail)
+    return safe
+  end
+
   -- Disk snapshot for a disk-cacheable view, or nil (both for views that
-  -- never persist, and on any cache miss/read failure).
+  -- never persist, and on any cache miss/read failure). One JSON file per
+  -- org (`orgs/<alias>.json`, via Org.org_cache), each cacheable view as a
+  -- sub-key -- see sf/cache.lua's module doc comment for why that's safe
+  -- even though `prefetch_record_views` below settles several of an org's
+  -- views back-to-back.
   local seed_from_disk = function(record, view_id)
     if not DISK_CACHEABLE_VIEWS[view_id] then
       return nil
     end
-    return util.read_cache_json(view_disk_cache_file(record, view_id))
+    return Org.org_cache:get(record.alias .. ":" .. view_id)
   end
 
   -- Shared "fetch landed" handling for show_view and fetch_view_into_cache:
@@ -388,7 +409,7 @@ function dashboard.open(records, opts)
     if result then
       session.cache[cache_key] = { fetching = false, data = result, err = nil }
       if DISK_CACHEABLE_VIEWS[view_id] and view_result_is_persistable(view_id, result) then
-        util.write_cache_json(view_disk_cache_file(record, view_id), result)
+        Org.org_cache:set(record.alias .. ":" .. view_id, persistable_view_data(view_id, result))
       end
     elseif seed then
       session.cache[cache_key] = { fetching = false, data = seed, err = nil }
@@ -461,8 +482,12 @@ function dashboard.open(records, opts)
       return
     end
 
-    -- Already fetching: don't start another fetch
+    -- Already fetching (e.g. a background prefetch beat us to it) and no
+    -- data/seed to show yet: paint now so the spinner replaces whatever the
+    -- previous tab left on screen, instead of leaving stale content up
+    -- until this fetch happens to land. Don't start another fetch.
     if cached and cached.fetching then
+      paint_view(record, 0)
       return
     end
 
@@ -528,7 +553,7 @@ function dashboard.open(records, opts)
     if not vim.api.nvim_buf_is_valid(session.list_buffer) then
       return
     end
-    local list_lines, list_hls = org_view.render_list_lines(records)
+    local list_lines, list_hls = org_view.render_list_lines(records, util.target_org, Org.get_default_devhub_alias())
     org_view.paint(session.list_buffer, list_lines, list_hls)
   end
 
@@ -541,9 +566,14 @@ function dashboard.open(records, opts)
     end
   end
 
+  -- Forward-declared: `close` below closes the help float too (if open),
+  -- but the float itself is built lazily by `toggle_help` further down.
+  local close_help
+
   local close = function()
     session.generation = session.generation + 1
     stop_spinner()
+    close_help()
     if vim.api.nvim_win_is_valid(session.list_window) then
       vim.api.nvim_win_close(session.list_window, true)
     end
@@ -564,6 +594,107 @@ function dashboard.open(records, opts)
 
   vim.keymap.set("n", "q", close, { buffer = session.list_buffer, nowait = true })
   vim.keymap.set("n", "<Esc>", close, { buffer = session.list_buffer, nowait = true })
+
+  -- "?" help overlay: the footers only have room for short labels (that
+  -- was the whole point of shortening them), so this is where the full
+  -- description for every key lives. Built from the same view registry
+  -- the footers/winbar already draw from, plus the handful of keys that
+  -- have no descriptor (scroll/cycle/logs/close) -- one source of truth,
+  -- nothing to keep in sync by hand when a key changes.
+  local help_window = nil
+
+  close_help = function()
+    if help_window and vim.api.nvim_win_is_valid(help_window) then
+      vim.api.nvim_win_close(help_window, true)
+    end
+    help_window = nil
+  end
+
+  local build_help_lines = function()
+    local lines = {}
+    local add = function(key, desc)
+      table.insert(lines, string.format("  %-18s %s", key, desc))
+    end
+
+    table.insert(lines, "Tabs")
+    for _, view_desc in ipairs(dashboard_views.tab_views()) do
+      add(view_desc.key, view_desc.label)
+    end
+    add("<Left>/<Right>, h/l", "Cycle tabs")
+    table.insert(lines, "")
+
+    table.insert(lines, "Org actions")
+    for _, view_desc in ipairs(dashboard_views.action_views("left")) do
+      add(view_desc.key, view_desc.help or view_desc.label)
+    end
+    add("D", "Delete org (scratch/sandbox only, asks to confirm)")
+    table.insert(lines, "")
+
+    table.insert(lines, "View actions")
+    for _, view_desc in ipairs(dashboard_views.action_views("right")) do
+      add(view_desc.key, view_desc.help or view_desc.label)
+    end
+    add("f", "Filter (logs view)")
+    add("r", "Refresh org list")
+    add("<C-d>/<C-u>", "Scroll view half page")
+    add("<Up>/<Down>", "Scroll view one line")
+    table.insert(lines, "")
+
+    table.insert(lines, "Logs tab")
+    add("<CR>", "Download log under cursor, open it, close dashboard")
+    add("D", "Download log under cursor")
+    table.insert(lines, "")
+
+    table.insert(lines, "Other")
+    add("?", "Toggle this help")
+    add("q, <Esc>", "Close dashboard")
+
+    return lines
+  end
+
+  local toggle_help = function()
+    if help_window and vim.api.nvim_win_is_valid(help_window) then
+      return close_help()
+    end
+
+    local lines = build_help_lines()
+    local help_buffer = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(help_buffer, 0, -1, false, lines)
+    vim.bo[help_buffer].modifiable = false
+    vim.bo[help_buffer].filetype = "SfOrgDashboard"
+    -- Toggled open/closed repeatedly within one dashboard session (unlike
+    -- list_buffer/view_buffer, created once) -- wipe it on close instead
+    -- of piling up an orphaned scratch buffer per toggle.
+    vim.bo[help_buffer].bufhidden = "wipe"
+
+    local width = 0
+    for _, line in ipairs(lines) do
+      width = math.max(width, #line)
+    end
+    width = math.min(width, vim.o.columns - 4)
+    local height = math.min(#lines, vim.o.lines - 4)
+
+    help_window = vim.api.nvim_open_win(help_buffer, true, {
+      relative = "editor",
+      row = math.floor((vim.o.lines - height - 2) / 2),
+      col = math.floor((vim.o.columns - width - 2) / 2),
+      width = width,
+      height = height,
+      style = "minimal",
+      border = ui_config.border or "rounded",
+      title = { { " Keys ", "SfTitle" } },
+      title_pos = "left",
+      zindex = 60,
+    })
+    vim.api.nvim_win_set_option(help_window, "winhl", "Normal:SfNormal,FloatBorder:SfBorder,FloatTitle:SfTitle")
+
+    for _, key in ipairs({ "q", "<Esc>", "?" }) do
+      vim.keymap.set("n", key, close_help, { buffer = help_buffer, nowait = true })
+    end
+  end
+
+  vim.keymap.set("n", "?", toggle_help, { buffer = session.list_buffer, nowait = true })
+  vim.keymap.set("n", "?", toggle_help, { buffer = session.view_buffer, nowait = true })
 
   -- Refresh key: clears cache, bumps generation, re-runs fetch_org_list.
   -- Overlapping fetch-org-list calls now resolve via last-writer-wins in
@@ -690,7 +821,7 @@ function dashboard.open(records, opts)
       return
     end
     local log_record = session.filtered_logs[view_row]
-    -- sfdx-conventional location, not the sf_cache plugin folder -- same
+    -- sfdx-conventional location, not the cache dir -- same
     -- place the replay debugger's local-log picker already looks, so a log
     -- downloaded here is immediately pickable for replay debugging too.
     local log_dir = util.get_sf_root() .. ".sfdx/tools/debug/logs/"
@@ -714,17 +845,45 @@ function dashboard.open(records, opts)
     end, record.alias)
   end
 
+  -- Delete the org under the list cursor (scratch orgs and sandboxes
+  -- only) after an explicit y/N confirmation -- a destructive, no-undo
+  -- action, so it never fires on a bare keypress. Shares the "D" key with
+  -- download_selected_log below: the logs tab already claims "D" for
+  -- "download log", so this only runs when some other tab is active.
+  local delete_selected_org = function()
+    local record = current_record()
+    if not record then
+      return
+    end
+    if not org_model.can_delete(record) then
+      return util.show_err("Only scratch orgs and sandboxes can be deleted.")
+    end
+
+    local kind = org_model.is_scratch(record) and "scratch org" or "sandbox"
+    vim.ui.input({ prompt = string.format("Delete %s '%s'? (y/N): ", kind, record.alias) }, function(input)
+      if input ~= "y" and input ~= "Y" then
+        return
+      end
+      Org.delete_org(record, repaint_list)
+    end)
+  end
+
   -- <CR>: download + open + close (you're done browsing, you want to read
   -- this one log). D (capital -- lowercase "d" is already the "details"
   -- tab shortcut, registered below): download only, dashboard stays open,
   -- so multiple logs can be grabbed in one go without reopening the
-  -- dashboard each time.
+  -- dashboard each time. Outside the logs tab, D deletes the selected org
+  -- instead (see delete_selected_org above).
   for _, buffer in ipairs({ session.list_buffer, session.view_buffer }) do
     vim.keymap.set("n", "<CR>", function()
       download_selected_log({ open = true, close = true })
     end, { buffer = buffer, nowait = true })
     vim.keymap.set("n", "D", function()
-      download_selected_log({ open = false, close = false })
+      if session.active_view_id == "logs" then
+        download_selected_log({ open = false, close = false })
+      else
+        delete_selected_org()
+      end
     end, { buffer = buffer, nowait = true })
   end
 
@@ -771,8 +930,9 @@ function dashboard.open(records, opts)
   -- Skip if only one record (cursor-landed prefetch already covers it).
   if #records > 1 then
     local warmed_aliases = {}
+    local devhub_alias = Org.get_default_devhub_alias()
     for _, record in ipairs(records) do
-      if (record.is_default or record.is_default_devhub) and not warmed_aliases[record.alias] then
+      if (record.alias == util.target_org or record.alias == devhub_alias) and not warmed_aliases[record.alias] then
         warmed_aliases[record.alias] = true
         prefetch_record_views(record)
       end

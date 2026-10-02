@@ -1,51 +1,41 @@
 -- Statusline components: current target org (and, in a later phase, active
 -- trace flags). Read-only against the cache in `sf.state` -- never shells
 -- out, reads files, or calls `sf.util.get_sf_root()` on every render.
-local M = {}
+local statusline = {}
 
-local H = { sf_project_cache = {} }
+local helpers = { sf_project_cache = {} }
 
 -- Invalidate the per-cwd "is this an sf project" cache when the cwd changes.
 vim.api.nvim_create_autocmd("DirChanged", {
   callback = function()
-    H.sf_project_cache = {}
+    helpers.sf_project_cache = {}
   end,
 })
 
 --- Cheap, cached check: is the current cwd inside an sf project? Only
 --- touches the filesystem once per cwd (via `U.get_sf_root`), not per render.
 ---@return boolean
-function M.is_sf_project()
+function statusline.is_sf_project()
   local cwd = vim.fn.getcwd()
-  if H.sf_project_cache[cwd] == nil then
-    H.sf_project_cache[cwd] = pcall(require("sf.util").get_sf_root)
+  if helpers.sf_project_cache[cwd] == nil then
+    helpers.sf_project_cache[cwd] = pcall(require("sf.util").get_sf_root)
   end
-  return H.sf_project_cache[cwd]
+  return helpers.sf_project_cache[cwd]
 end
 
 --- Highlight group for the current org, colored by type: Salesforce blue
 --- for production, white for sandbox, cyan for scratch, else the accent.
 ---@return string
-function M.org_color()
-  local org = require("sf.state").get()
-  if org.is_prod then
-    return "SfStatusProd"
-  end
-  if org.is_scratch then
-    return "SfStatusScratch"
-  end
-  if org.is_sandbox then
-    return "SfStatusSandbox"
-  end
-  return "SfStatusOrg"
+function statusline.org_color()
+  return require("sf.org_model").highlight_group(require("sf.state").get())
 end
 
 --- Plain text for the current target org: a cloud icon (colored per
---- `M.org_color()` by the caller) followed by the alias, or "" if not in an
+--- `statusline.org_color()` by the caller) followed by the alias, or "" if not in an
 --- sf project or no org is set yet.
 ---@return string
-function M.org()
-  if not M.is_sf_project() then
+function statusline.org()
+  if not statusline.is_sf_project() then
     return ""
   end
 
@@ -63,22 +53,22 @@ end
 --- Statusline string with `%#Group#` highlights, for plain `'statusline'`
 --- users, e.g. `vim.o.statusline = "...%{%v:lua.require'sf.statusline'.render()%}"`.
 ---@return string
-function M.render()
-  local text = M.org()
+function statusline.render()
+  local text = statusline.org()
   if text == "" then
     return ""
   end
-  return string.format("%%#%s#%s%%*", M.org_color(), text)
+  return string.format("%%#%s#%s%%*", statusline.org_color(), text)
 end
 
 --- lualine component table for the target org. Usage:
 --- `table.insert(opts.sections.lualine_x, 1, require("sf.statusline").lualine())`
 ---@return table
-function M.lualine()
+function statusline.lualine()
   return {
-    M.org,
-    cond = M.is_sf_project,
-    color = M.org_color,
+    statusline.org,
+    cond = statusline.is_sf_project,
+    color = statusline.org_color,
     on_click = function()
       require("sf").open_org_dashboard()
     end,
@@ -92,7 +82,7 @@ end
 --- clickable to *enable* logging, not just to disable it. "" only when the
 --- feature is turned off entirely. Read-only against the cache -- no I/O.
 ---@return string
-function M.trace()
+function statusline.trace()
   if vim.g.sf and vim.g.sf.statusline and vim.g.sf.statusline.trace_flags == false then
     return ""
   end
@@ -120,11 +110,11 @@ end
 --- enable/disable replay logging for the target org (enable when none
 --- active, disable when one or more are).
 ---@return table
-function M.lualine_trace()
+function statusline.lualine_trace()
   return {
-    M.trace,
+    statusline.trace,
     cond = function()
-      return M.is_sf_project() and M.trace() ~= ""
+      return statusline.is_sf_project() and statusline.trace() ~= ""
     end,
     color = "SfStatusTrace",
     on_click = function()
@@ -133,4 +123,4 @@ function M.lualine_trace()
   }
 end
 
-return M
+return statusline

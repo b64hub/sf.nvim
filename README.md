@@ -211,8 +211,10 @@ require('sf').setup({
   -- you can override the current working package using |Sf.set_current_package|
   default_dir = '/force-app/main/default/',
 
-  -- the folder this plugin uses to store intermediate data. It's under the sf project root directory.
-  plugin_folder_name = '/sf_cache/',
+  -- the folder this plugin uses to store intermediate data (cache, retrieve
+  -- scratch space, metadata listings). Project-local, dot-prefixed to match
+  -- the other sfdx-generated folders ('.sf/', '.sfdx/').
+  cache_dir = '/.nvim/sf/',
 
   -- after the test running with code coverage completes, display uncovered line sign automatically.
   -- you can set it to `false`, then manually run toggle_sign command.
@@ -239,11 +241,11 @@ require('sf').setup({
     -- default TraceFlag duration for `:SF debug enable` when no minutes are
     -- given (Salesforce caps TraceFlag duration at 24h regardless).
     trace_flag_hours = 1,
-    -- where `:SF debug local` looks for logs; "<plugin_folder>" resolves to
-    -- the plugin cache dir, everything else is relative to the project root.
+    -- where `:SF debug local` looks for logs; "<cache_dir>" resolves to
+    -- `cache_dir` above, everything else is relative to the project root.
     log_globs = {
       ".sfdx/tools/debug/**/*.log",
-      "<plugin_folder>/logs/*.log",
+      "<cache_dir>/logs/*.log",
     },
   },
 
@@ -322,6 +324,13 @@ In case you decide to go with the default hotkeys:
 | `\s`               | toggle_sign                | Show/hide line coverage sign icon                                                                   |
 | `]v`               | uncovered_jump_forward     | jump to next test uncovered hunk                                                                    |
 | `[v`               | uncovered_jump_backward    | jump to last test uncovered hunk                                                                    |
+| `<leader>sflc`     | replay_debug_current_log   | Apex Replay Debugger: debug the `.log` file in the current buffer                                   |
+| `<leader>sfll`     | replay_debug_local_log     | Apex Replay Debugger: pick a log already on disk                                                    |
+| `<leader>sflo`     | replay_debug_org_log       | Apex Replay Debugger: pick a log from the org                                                       |
+| `<leader>sflr`     | replay_debug_last_log      | Apex Replay Debugger: relaunch the last log                                                         |
+| `<leader>sflb`     | refresh_debug_breakpoint_info | Apex Replay Debugger: refresh cached `apex_ls` breakpoint info                                   |
+| `<leader>sflt`     | toggle_replay_debug_logging | Apex Replay Debugger: toggle the TraceFlag on/off for target_org                                   |
+| `<leader>sflf`     | pull_log                   | fetch a log from the org and open it                                                                |
 
 All keys are listed in `:h sf.nvim` or [help.txt file](https://github.com/xixiaofinland/sf.nvim/blob/main/doc/sf.txt). All default hotkeys live under the `<leader>sf` prefix (except `\s`, `[v`/`]v`, which are global idioms), so they won't collide with a bare `<leader>s` mapping from another plugin.
 

@@ -11,7 +11,7 @@
 
 local util = require("sf.util")
 local cmd_builder = require("sf.sub.cmd_builder")
-local async_cache = require("sf.sub.async_cache")
+local cache = require("sf.cache")
 
 local rest_api = {}
 
@@ -42,7 +42,7 @@ end
 -- alias: multiple simultaneous callers for the same alias spawn once and
 -- all receive the same result (or error), solving the "thundering herd"
 -- during prefetch.
-local org_display_cache = async_cache.new({
+local org_display_cache = cache.new({
   ttl_seconds = 300, -- access tokens expire, so cache must not live forever
   fetch = function(alias, cb)
     local cmd = cmd_builder:new():cmd("org"):act("display"):addParams("--json"):set_org(alias):buildAsTable()
@@ -241,6 +241,27 @@ rest_api.delete = function(session, sobject, id, cb)
     "-X",
     "DELETE",
     string.format("%s/services/data/v%s/tooling/sobjects/%s/%s", session.url, session.api_version, sobject, id),
+    "-H",
+    "Authorization: Bearer " .. session.token,
+  }, function(decoded, err)
+    cb(decoded ~= nil and decoded.status == 204, err)
+  end)
+end
+
+--- Same as `rest_api.delete`, but against the standard (non-Tooling) REST
+--- sobjects endpoint -- needed for objects the Tooling API doesn't expose,
+--- e.g. `ActiveScratchOrg` on the Dev Hub (used by Org.delete_org to
+--- delete a scratch org the same way `sf org delete scratch` does
+--- internally, minus the CLI/Node startup cost).
+---@param session table
+---@param sobject string
+---@param id string
+---@param cb fun(ok: boolean, err: string|nil)
+rest_api.delete_std = function(session, sobject, id, cb)
+  rest_api.curl_json({
+    "-X",
+    "DELETE",
+    string.format("%s/services/data/v%s/sobjects/%s/%s", session.url, session.api_version, sobject, id),
     "-H",
     "Authorization: Bearer " .. session.token,
   }, function(decoded, err)
