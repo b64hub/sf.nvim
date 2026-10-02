@@ -51,7 +51,7 @@ Helpers.new_child_neovim = function()
   end
 
   child.go_to_sf_sub_dir = function()
-    child.cmd("cd tests/dir/sf-project/sf_cache/")
+    child.cmd("cd tests/dir/sf-project/.nvim/sf/")
   end
 
   child.open_in_non_sf_dir = function(file)

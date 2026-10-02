@@ -211,8 +211,10 @@ require('sf').setup({
   -- you can override the current working package using |Sf.set_current_package|
   default_dir = '/force-app/main/default/',
 
-  -- the folder this plugin uses to store intermediate data. It's under the sf project root directory.
-  plugin_folder_name = '/sf_cache/',
+  -- the folder this plugin uses to store intermediate data (cache, retrieve
+  -- scratch space, metadata listings). Project-local, dot-prefixed to match
+  -- the other sfdx-generated folders ('.sf/', '.sfdx/').
+  cache_dir = '/.nvim/sf/',
 
   -- after the test running with code coverage completes, display uncovered line sign automatically.
   -- you can set it to `false`, then manually run toggle_sign command.
@@ -239,11 +241,11 @@ require('sf').setup({
     -- default TraceFlag duration for `:SF debug enable` when no minutes are
     -- given (Salesforce caps TraceFlag duration at 24h regardless).
     trace_flag_hours = 1,
-    -- where `:SF debug local` looks for logs; "<plugin_folder>" resolves to
-    -- the plugin cache dir, everything else is relative to the project root.
+    -- where `:SF debug local` looks for logs; "<cache_dir>" resolves to
+    -- `cache_dir` above, everything else is relative to the project root.
     log_globs = {
       ".sfdx/tools/debug/**/*.log",
-      "<plugin_folder>/logs/*.log",
+      "<cache_dir>/logs/*.log",
     },
   },
 

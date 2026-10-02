@@ -8,6 +8,7 @@ local org_status = require("sf.sub.org_status")
 local rest_api = require("sf.sub.rest_api")
 local Org = require("sf.org")
 local Debug = require("sf.debug")
+local org_model = require("sf.org_model")
 
 --- Format one log record the same way whether it's being rendered or
 --- filtered, so a filter query can never drift from what's actually shown.
@@ -550,7 +551,7 @@ local views = {
     fetch = nil,
     render = nil,
     action = function(record, dashboard_api)
-      if not record.is_sandbox then
+      if not org_model.can_refresh(record) then
         return util.show_err("Only sandboxes can be refreshed.")
       end
 

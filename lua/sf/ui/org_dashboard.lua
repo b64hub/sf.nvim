@@ -8,6 +8,7 @@ local Icons = require("sf.ui.icons")
 local Layout = require("sf.ui.layout")
 local org_view = require("sf.ui.org_view")
 local dashboard_views = require("sf.ui.dashboard_views")
+local org_model = require("sf.org_model")
 local Org = require("sf.org")
 local rest_api = require("sf.sub.rest_api")
 
@@ -80,7 +81,7 @@ function dashboard.navigate(records, opts)
 end
 
 --- Open a split-pane dashboard showing orgs on the left, details on the right.
----@param records table[] org records (alias, username, is_scratch, is_sandbox, is_prod, is_default, is_default_devhub, expiration_date)
+---@param records table[] org records (sf.org_model records -- alias, username, org_type, expiration_date, ...)
 ---@param opts table { prompt = string, initial_view_id = string|nil, initial_alias = string|nil }
 function dashboard.open(records, opts)
   if #records == 0 then
@@ -98,7 +99,7 @@ function dashboard.open(records, opts)
     active_session = nil
   end
 
-  local list_lines, list_hls = org_view.render_list_lines(records)
+  local list_lines, list_hls = org_view.render_list_lines(records, util.target_org, Org.get_default_devhub_alias())
 
   local list_buffer = vim.api.nvim_create_buf(false, true)
   vim.bo[list_buffer].filetype = "SfOrgDashboard"
@@ -358,10 +359,6 @@ function dashboard.open(records, opts)
   -- should have to opt in too, not silently start caching to disk.
   local DISK_CACHEABLE_VIEWS = { details = true, limits = true, packages = true }
 
-  local view_disk_cache_file = function(record, view_id)
-    return string.format("dashboard_%s_%s.json", record.alias, view_id)
-  end
-
   -- Only the "details" fetch can hand back a non-nil result that's still
   -- a total failure (it always calls back with err = nil to avoid
   -- blanking the pane on a partial failure -- see its fetch in
@@ -374,13 +371,34 @@ function dashboard.open(records, opts)
     return true
   end
 
+  -- "details" carries the raw `sf org display` result (result.detail),
+  -- which may include secrets (accessToken, ...) -- rest_api.lua's own
+  -- in-memory cache for that call exists specifically because it must
+  -- never be persisted. Every other cacheable view's result is already
+  -- disk-safe as-is. Route through org_model's allowlist (not the
+  -- REDACT_KEYS denylist org_view's render path uses) so an unknown
+  -- future field fails closed -- dropped, not written -- instead of
+  -- fail-open onto disk.
+  local persistable_view_data = function(view_id, result)
+    if view_id ~= "details" or not result.detail then
+      return result
+    end
+    local safe = vim.deepcopy(result)
+    safe.detail = org_model.persistable_detail(result.detail)
+    return safe
+  end
+
   -- Disk snapshot for a disk-cacheable view, or nil (both for views that
-  -- never persist, and on any cache miss/read failure).
+  -- never persist, and on any cache miss/read failure). One JSON file per
+  -- org (`orgs/<alias>.json`, via Org.org_cache), each cacheable view as a
+  -- sub-key -- see sf/cache.lua's module doc comment for why that's safe
+  -- even though `prefetch_record_views` below settles several of an org's
+  -- views back-to-back.
   local seed_from_disk = function(record, view_id)
     if not DISK_CACHEABLE_VIEWS[view_id] then
       return nil
     end
-    return util.read_cache_json(view_disk_cache_file(record, view_id))
+    return Org.org_cache:get(record.alias .. ":" .. view_id)
   end
 
   -- Shared "fetch landed" handling for show_view and fetch_view_into_cache:
@@ -391,7 +409,7 @@ function dashboard.open(records, opts)
     if result then
       session.cache[cache_key] = { fetching = false, data = result, err = nil }
       if DISK_CACHEABLE_VIEWS[view_id] and view_result_is_persistable(view_id, result) then
-        util.write_cache_json(view_disk_cache_file(record, view_id), result)
+        Org.org_cache:set(record.alias .. ":" .. view_id, persistable_view_data(view_id, result))
       end
     elseif seed then
       session.cache[cache_key] = { fetching = false, data = seed, err = nil }
@@ -535,7 +553,7 @@ function dashboard.open(records, opts)
     if not vim.api.nvim_buf_is_valid(session.list_buffer) then
       return
     end
-    local list_lines, list_hls = org_view.render_list_lines(records)
+    local list_lines, list_hls = org_view.render_list_lines(records, util.target_org, Org.get_default_devhub_alias())
     org_view.paint(session.list_buffer, list_lines, list_hls)
   end
 
@@ -803,7 +821,7 @@ function dashboard.open(records, opts)
       return
     end
     local log_record = session.filtered_logs[view_row]
-    -- sfdx-conventional location, not the sf_cache plugin folder -- same
+    -- sfdx-conventional location, not the cache dir -- same
     -- place the replay debugger's local-log picker already looks, so a log
     -- downloaded here is immediately pickable for replay debugging too.
     local log_dir = util.get_sf_root() .. ".sfdx/tools/debug/logs/"
@@ -837,11 +855,11 @@ function dashboard.open(records, opts)
     if not record then
       return
     end
-    if not record.is_scratch and not record.is_sandbox then
+    if not org_model.can_delete(record) then
       return util.show_err("Only scratch orgs and sandboxes can be deleted.")
     end
 
-    local kind = record.is_scratch and "scratch org" or "sandbox"
+    local kind = org_model.is_scratch(record) and "scratch org" or "sandbox"
     vim.ui.input({ prompt = string.format("Delete %s '%s'? (y/N): ", kind, record.alias) }, function(input)
       if input ~= "y" and input ~= "Y" then
         return
@@ -912,8 +930,9 @@ function dashboard.open(records, opts)
   -- Skip if only one record (cursor-landed prefetch already covers it).
   if #records > 1 then
     local warmed_aliases = {}
+    local devhub_alias = Org.get_default_devhub_alias()
     for _, record in ipairs(records) do
-      if (record.is_default or record.is_default_devhub) and not warmed_aliases[record.alias] then
+      if (record.alias == util.target_org or record.alias == devhub_alias) and not warmed_aliases[record.alias] then
         warmed_aliases[record.alias] = true
         prefetch_record_views(record)
       end

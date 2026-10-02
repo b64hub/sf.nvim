@@ -1,6 +1,7 @@
 local util = require("sf.util")
 local cmd_builder = require("sf.sub.cmd_builder")
-local async_cache = require("sf.sub.async_cache")
+local cache = require("sf.cache")
+local org_model = require("sf.org_model")
 
 local helpers = {}
 local Org = {}
@@ -72,7 +73,6 @@ function Org.set_target_org_to(alias, global)
       string.format("%s - set target_org failed! %s", alias, err)
     )
   end
-  helpers.mark_default(alias)
   local record = nil
   for _, record_entry in ipairs(helpers.orgs) do
     if record_entry.alias == alias then
@@ -185,7 +185,7 @@ end
 ---   target_org happens to be. Defaults to `util.target_org` when omitted.
 helpers.download_log = function(log_id, dir, on_done, alias)
   if vim.fn.isdirectory(dir) == 0 then
-    vim.fn.mkdir(dir, "-p")
+    vim.fn.mkdir(dir, "p")
   end
 
   -- Tooling API `ApexLog/<id>/Body` directly, instead of shelling out to
@@ -338,8 +338,33 @@ helpers.pick_org_log = function(dir, on_done)
   util.system_call(cmd_tbl, nil, "Failed to get logs from org", on_list, "Querying logs...")
 end
 
-helpers.orgs = {} -- array of { alias, username, is_scratch, is_sandbox, is_prod, is_default, expiration_date }
+helpers.orgs = {} -- array of sf.org_model records (alias, username, org_type, ...)
 helpers.ORG_LIST_CACHE_FILE = "orgs.json" -- last-known-good snapshot; see store_orgs/with_orgs
+
+-- Cached result of the last `read_target_config_from_disk` -- "is this
+-- alias the default Dev Hub" is session/CLI config, not an org_model
+-- property (see org_model.lua's doc comment), so it's tracked here
+-- instead of being stored on an org record. Refreshed alongside
+-- `util.target_org` by `Org.refresh_target_org_from_disk`.
+helpers.default_devhub_alias = nil
+
+--- Per-org disk cache: one JSON file per alias (`orgs/<sanitized alias>.json`),
+--- holding every sub-cache keyed by that org -- the org dashboard's
+--- per-view snapshots (details/limits/packages) and the org_model-merged
+--- `sf org display` detail (see `org_model.merge_detail`), all as sibling
+--- sub-keys of one file instead of one file each. Exposed on `Org` so
+--- `sf.ui.org_dashboard` (which requires this module already) shares the
+--- same store rather than each hand-rolling its own file naming.
+---@param alias string
+---@return string
+helpers.org_cache_file = function(alias)
+  return "orgs/" .. cache.sanitize_filename(alias) .. ".json"
+end
+
+Org.org_cache = cache.disk_store(function(key)
+  local alias, subkey = key:match("^(.*):([^:]+)$")
+  return helpers.org_cache_file(alias), subkey
+end)
 
 -- Persisted record of sandboxes with a refresh requested but not yet
 -- confirmed done -- map of alias -> { devhub_alias, sandbox_name,
@@ -436,7 +461,10 @@ end
 --- snapshot, right after a successful deletion -- same in-place-mutation
 --- contract as `clean_org_cache`/`store_orgs`, so the dashboard (which
 --- holds this very table as its `records`) drops the row immediately
---- instead of waiting for the next full `sf org list`.
+--- instead of waiting for the next full `sf org list`. Also drops that
+--- alias's per-org cache file (dashboard view snapshots, merged detail) --
+--- otherwise a deleted org's cache leaks on disk forever, since nothing
+--- else ever revisits a removed alias to clean it up.
 ---@param alias string
 helpers.remove_org_from_cache = function(alias)
   for index, record in ipairs(helpers.orgs) do
@@ -446,17 +474,18 @@ helpers.remove_org_from_cache = function(alias)
     end
   end
   util.write_cache_json(helpers.ORG_LIST_CACHE_FILE, helpers.orgs)
+  Org.org_cache:delete_file(helpers.org_cache_file(alias))
 end
 
 --- See `Org.delete_org`.
 ---@param record table
 ---@param on_done fun()|nil
 helpers.delete_org = function(record, on_done)
-  if not record.is_scratch and not record.is_sandbox then
+  if not org_model.can_delete(record) then
     return util.show_err("Only scratch orgs and sandboxes can be deleted.")
   end
 
-  if record.is_scratch then
+  if org_model.is_scratch(record) then
     return helpers.delete_scratch_org(record, on_done)
   end
 
@@ -522,17 +551,11 @@ end
 ---@param on_done fun()|nil called once the refresh has been *requested*
 ---  (the CLI call runs `--async`, it does not wait for completion)
 helpers.refresh_sandbox = function(record, on_done)
-  if not record.is_sandbox then
+  if not org_model.can_refresh(record) then
     return util.show_err("Only sandboxes can be refreshed.")
   end
 
-  local devhub = nil
-  for _, candidate in ipairs(helpers.orgs) do
-    if candidate.is_default_devhub then
-      devhub = candidate
-      break
-    end
-  end
+  local devhub = helpers.default_devhub_alias and helpers.find_org_by_alias(helpers.default_devhub_alias)
   if not devhub then
     return util.show_err("No default Dev Hub configured. Run `sf config set target-dev-hub=<alias>` first.")
   end
@@ -611,16 +634,6 @@ helpers.delete_sandbox = function(record, on_done)
   )
 end
 
---- Flip the `is_default` flag onto `alias` and off every other cached org,
---- so the picker's `●` marker stays in sync right after a target-org
---- change instead of only after the next `:SF org list`.
----@param alias string
-helpers.mark_default = function(alias)
-  for _, r in ipairs(helpers.orgs) do
-    r.is_default = r.alias == alias
-  end
-end
-
 --- Write "target-org" into the project-local `.sf/config.json` (or the
 --- global `~/.sf/config.json` when `global` is true), merging into whatever
 --- is already there. Synchronous file I/O -- same config file `sf config
@@ -668,7 +681,7 @@ helpers.write_target_org_to_config = function(alias, global)
 end
 
 helpers.format_org_item = function(record)
-  local marker = record.is_default and "● " or "  "
+  local marker = (record.alias == util.target_org) and "● " or "  "
   local alias = record.alias or ""
   local username = record.username or ""
   return marker .. alias .. " (" .. username .. ")"
@@ -729,7 +742,6 @@ helpers.set_target_org = function()
       if not ok then
         return util.show_err(org .. " - set target_org failed! " .. err)
       end
-      helpers.mark_default(org)
       util.set_target_org(org, record)
     end)
   end)
@@ -749,7 +761,6 @@ helpers.set_global_target_org = function()
       if not ok then
         return util.show_err(string.format("Global set target_org [%s] failed! %s", org, err))
       end
-      helpers.mark_default(org)
       util.set_target_org(org, record)
       vim.notify("Global target_org set: " .. org, vim.log.levels.INFO)
     end)
@@ -781,35 +792,14 @@ helpers.store_orgs = function(data)
   end
 
   for _, v in pairs(org_data) do
-    local alias = v.alias or v.username
-    local is_scratch = v.isScratch == true
-    local is_sandbox = v.isSandbox == true
-    local record = {
-      alias = alias,
-      username = v.username,
-      is_scratch = is_scratch,
-      is_sandbox = is_sandbox,
-      is_prod = not is_scratch and not is_sandbox,
-      is_default = v.isDefaultUsername == true,
-      is_default_devhub = v.isDefaultDevHubUsername == true,
-      expiration_date = v.expirationDate,
-      -- Only present on scratch orgs (`sf org list`'s local auth-file
-      -- fields); used by helpers.delete_scratch_org to resolve which org's
-      -- session to delete the ActiveScratchOrg record through.
-      devhub_username = v.devHubUsername,
-      -- Used by helpers.refresh_sandbox to look up the sandbox's
-      -- SandboxProcess/SandboxName on the Dev Hub (trimmed to 15 chars,
-      -- same as the 18-char `orgId` Salesforce otherwise reports).
-      org_id = v.orgId,
-    }
-
-    table.insert(helpers.orgs, record)
+    table.insert(helpers.orgs, org_model.from_org_list(v))
   end
 
-  -- `isDefaultUsername` above only reflects the *global* default on recent
-  -- `sf` CLI versions, not a project-local `target-org` -- resolve the
-  -- statusline's org from disk instead, now that `helpers.orgs` has metadata to
-  -- match the alias against.
+  -- `isDefaultUsername`/`isDefaultDevHubUsername` aren't part of the
+  -- org_model record at all (see org_model.lua's doc comment on why --
+  -- session/config state, not an org property) -- resolve both the
+  -- statusline's target org and the default Dev Hub from disk instead,
+  -- now that `helpers.orgs` has metadata to match an alias against.
   Org.refresh_target_org_from_disk()
 
   -- Re-apply any pending-sandbox-refresh flags: this function rebuilds
@@ -830,7 +820,7 @@ end
 -- once nothing is in flight -- unlike get_org_display above, this never
 -- serves a stale completed result, so a manual refresh always reflects
 -- reality (e.g. an org added via `sf org login` since the last fetch).
-local org_list_cache = async_cache.new({
+local org_list_cache = cache.new({
   fetch = function(_, cb)
     vim.fn.jobstart("sf org list --json --skip-connection-status", {
       stdout_buffered = true,
@@ -857,11 +847,20 @@ helpers.fetch_org_list = function(on_done)
   helpers.fetch_and_store_orgs(on_done)
 end
 
---- Read "target-org" from the project's `.sf/config.json`, falling back to
---- the global `~/.sf/config.json`. File reads only, no `sf` CLI call, so
---- this is cheap enough to run on `FocusGained`/`DirChanged`.
----@return string|nil
-helpers.read_target_org_from_config_files = function()
+--- Read "target-org" and "target-dev-hub" from the project's
+--- `.sf/config.json`, falling back to the global `~/.sf/config.json` for
+--- whichever key the project-local file doesn't set (project wins over
+--- global for each key independently, same precedence `sf` itself uses).
+--- File reads only, no `sf` CLI call, so this is cheap enough to run on
+--- `FocusGained`/`DirChanged`. Neither value is ever stored on an org
+--- record (see org_model.lua) -- this is the sf CLI's own notion of
+--- "current org"/"current Dev Hub", read fresh every time, so a change
+--- made in another terminal (or by editing the file directly) is always
+--- reflected: if our cache and the CLI's own config ever disagree, the
+--- CLI's config wins, because this always re-reads it rather than
+--- trusting a stored flag.
+---@return string|nil target_org, string|nil target_devhub
+helpers.read_target_config_from_disk = function()
   local candidates = {}
 
   local ok_root, root = pcall(util.get_sf_root)
@@ -874,35 +873,50 @@ helpers.read_target_org_from_config_files = function()
     table.insert(candidates, home .. "/.sf/config.json")
   end
 
+  local target_org, target_devhub
   for _, path in ipairs(candidates) do
     local ok_read, lines = pcall(vim.fn.readfile, path)
     if ok_read then
       local ok_json, tbl = pcall(vim.json.decode, table.concat(lines, "\n"))
-      if ok_json and tbl and tbl["target-org"] then
-        return tbl["target-org"]
+      if ok_json and type(tbl) == "table" then
+        target_org = target_org or tbl["target-org"]
+        target_devhub = target_devhub or tbl["target-dev-hub"]
       end
     end
   end
 
-  return nil
+  return target_org, target_devhub
 end
 
---- Pick up a target-org change made outside Nvim (e.g. `sf config set
---- target-org` in another terminal), by reading the sf CLI's own config
---- files rather than shelling out. Safe to call frequently (e.g. on
---- `FocusGained`); never errors.
+--- The default Dev Hub alias, as last read from disk by
+--- `Org.refresh_target_org_from_disk` (never stored on an org record --
+--- see org_model.lua's doc comment).
+---@return string|nil
+Org.get_default_devhub_alias = function()
+  return helpers.default_devhub_alias
+end
+
+--- Pick up a target-org/default-Dev-Hub change made outside Nvim (e.g.
+--- `sf config set target-org` in another terminal), by reading the sf
+--- CLI's own config files rather than shelling out. Safe to call
+--- frequently (e.g. on `FocusGained`); never errors.
 Org.refresh_target_org_from_disk = function()
-  local ok, alias = pcall(helpers.read_target_org_from_config_files)
-  if ok and alias and alias ~= util.target_org then
+  local ok, target_org, target_devhub = pcall(helpers.read_target_config_from_disk)
+  if not ok then
+    return
+  end
+
+  helpers.default_devhub_alias = target_devhub
+
+  if target_org and target_org ~= util.target_org then
     local record
     for _, r in ipairs(helpers.orgs) do
-      if r.alias == alias then
+      if r.alias == target_org then
         record = r
         break
       end
     end
-    helpers.mark_default(alias)
-    util.set_target_org(alias, record)
+    util.set_target_org(target_org, record)
   end
 end
 
@@ -933,7 +947,7 @@ helpers.diff_in = function(org)
   local file_name = vim.fn.expand("%:t")
   local metadataType = helpers.get_metadata_type(vim.fn.expand("%:p"))
   local file_name_no_ext = helpers.get_file_name_without_extension(file_name)
-  local temp_path = util.get_plugin_folder_path() .. "diffs/"
+  local temp_path = util.get_cache_dir() .. "diffs/"
 
   -- Create diffs folder if it doesn't exist
   if vim.fn.isdirectory(temp_path) == 0 then

@@ -109,7 +109,7 @@ T["setup()"]["has default config"] = function()
   })
   expect_config("terminal", "integrated")
   expect_config("default_dir", "/force-app/main/default/")
-  expect_config("plugin_folder_name", "/sf_cache/")
+  expect_config("cache_dir", "/.nvim/sf/")
   expect_config("auto_display_code_sign", true)
   expect_config("code_sign_highlight", {
     covered = { fg = "#b7f071" },
@@ -270,7 +270,7 @@ T["setup()"]["global user-keys disabled -> enabled when 0. enable_hotkeys 1. swi
   no_nmap("<leader>sfo")
   no_nmap("<leader>sfml")
 
-  child.cmd("cd " .. root_path .. "/tests/dir/sf-project/sf_cache/")
+  child.cmd("cd " .. root_path .. "/tests/dir/sf-project/.nvim/sf/")
   has_nmap("<leader>sfs")
   has_nmap("<leader>sff")
   has_nmap("<leader>sfo")

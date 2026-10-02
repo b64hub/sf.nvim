@@ -35,27 +35,8 @@ test_set["pad: nil input"] = function()
   eq(child.lua_get([[org_view.pad(nil, 3)]]), "   ")
 end
 
--- highlight_for
-
-test_set["highlight_for: prod org"] = function()
-  child.lua([[record = { is_prod = true, is_sandbox = false, is_scratch = false }]])
-  eq(child.lua_get([[org_view.highlight_for(record)]]), "SfStatusProd")
-end
-
-test_set["highlight_for: sandbox org"] = function()
-  child.lua([[record = { is_prod = false, is_sandbox = true, is_scratch = false }]])
-  eq(child.lua_get([[org_view.highlight_for(record)]]), "SfStatusSandbox")
-end
-
-test_set["highlight_for: scratch org"] = function()
-  child.lua([[record = { is_prod = false, is_sandbox = false, is_scratch = true }]])
-  eq(child.lua_get([[org_view.highlight_for(record)]]), "SfStatusScratch")
-end
-
-test_set["highlight_for: generic org (no type set)"] = function()
-  child.lua([[record = { is_prod = false, is_sandbox = false, is_scratch = false }]])
-  eq(child.lua_get([[org_view.highlight_for(record)]]), "SfStatusOrg")
-end
+-- highlight is now org_model.highlight_group (see tests/test_org_model.lua) --
+-- org_view no longer has its own copy.
 
 -- days_until
 
@@ -106,37 +87,37 @@ end
 test_set["render_list_lines: marker - default target org only"] = function()
   child.lua([[
     records = {
-      { alias = "org1", username = "u1", is_prod = true, is_default = true, is_default_devhub = false },
+      { alias = "org1", username = "u1", org_type = "production" },
     }
   ]])
-  local line = child.lua_get([[(org_view.render_list_lines(records))[1] ]])
+  local line = child.lua_get([[(org_view.render_list_lines(records, "org1", nil))[1] ]])
   expect.match(line, "^\u{25CF} ")
 end
 
 test_set["render_list_lines: marker - default devhub only"] = function()
   child.lua([[
     records = {
-      { alias = "devhub", username = "dh", is_prod = true, is_default = false, is_default_devhub = true },
+      { alias = "devhub", username = "dh", org_type = "production" },
     }
   ]])
-  local line = child.lua_get([[(org_view.render_list_lines(records))[1] ]])
+  local line = child.lua_get([[(org_view.render_list_lines(records, nil, "devhub"))[1] ]])
   expect.match(line, "^\u{25C6} ")
 end
 
 test_set["render_list_lines: marker - both default and devhub"] = function()
   child.lua([[
     records = {
-      { alias = "both", username = "b", is_prod = true, is_default = true, is_default_devhub = true },
+      { alias = "both", username = "b", org_type = "production" },
     }
   ]])
-  local line = child.lua_get([[(org_view.render_list_lines(records))[1] ]])
+  local line = child.lua_get([[(org_view.render_list_lines(records, "both", "both"))[1] ]])
   expect.match(line, "^\u{25C8} ")
 end
 
 test_set["render_list_lines: marker - neither"] = function()
   child.lua([[
     records = {
-      { alias = "other", username = "o", is_prod = true, is_default = false, is_default_devhub = false },
+      { alias = "other", username = "o", org_type = "production" },
     }
   ]])
   local line = child.lua_get([[(org_view.render_list_lines(records))[1] ]])
@@ -149,9 +130,7 @@ test_set["render_list_lines: scratch expiry shown for near-term dates"] = functi
       {
         alias = "scratch_soon",
         username = "u",
-        is_scratch = true,
-        is_default = false,
-        is_default_devhub = false,
+        org_type = "scratch",
         expiration_date = os.date("%Y-%m-%d", os.time() + 2 * 86400) .. "T00:00:00.000Z",
       },
     }
@@ -166,9 +145,7 @@ test_set["render_list_lines: scratch expiry hidden for far-future dates"] = func
       {
         alias = "scratch_far",
         username = "u",
-        is_scratch = true,
-        is_default = false,
-        is_default_devhub = false,
+        org_type = "scratch",
         expiration_date = os.date("%Y-%m-%d", os.time() + 100000 * 86400) .. "T00:00:00.000Z",
       },
     }
@@ -183,9 +160,7 @@ test_set["render_list_lines: shows a 'refreshing...' marker for a pending sandbo
       {
         alias = "sandbox1",
         username = "u",
-        is_sandbox = true,
-        is_default = false,
-        is_default_devhub = false,
+        org_type = "sandbox",
         sandbox_refresh_pending = true,
       },
     }
@@ -197,7 +172,7 @@ end
 test_set["render_list_lines: no 'refreshing...' marker without the pending flag"] = function()
   child.lua([[
     records = {
-      { alias = "sandbox1", username = "u", is_sandbox = true, is_default = false, is_default_devhub = false },
+      { alias = "sandbox1", username = "u", org_type = "sandbox" },
     }
   ]])
   local line = child.lua_get([[(org_view.render_list_lines(records))[1] ]])
@@ -207,8 +182,8 @@ end
 test_set["render_list_lines: alias column aligned across rows"] = function()
   child.lua([[
     records = {
-      { alias = "a", username = "long_username_here", is_prod = true, is_default = false, is_default_devhub = false },
-      { alias = "longer_alias", username = "u", is_sandbox = true, is_default = false, is_default_devhub = false },
+      { alias = "a", username = "long_username_here", org_type = "production" },
+      { alias = "longer_alias", username = "u", org_type = "sandbox" },
     }
   ]])
   local lines = child.lua_get([[org_view.render_list_lines(records)]])

@@ -223,26 +223,6 @@ T["with_orgs"]["already-populated helpers.orgs short-circuits both the disk read
   eq(child.lua_get([[_G.fn_called_with[1].alias]]), "already_loaded")
 end
 
-T["mark_default"] = new_set({
-  hooks = {
-    pre_case = function()
-      child.lua([[H = M.__test]])
-      child.lua([[
-        H.orgs = {
-          { alias = "one", is_default = true },
-          { alias = "two", is_default = false },
-        }
-      ]])
-    end,
-  },
-})
-
-T["mark_default"]["flips is_default onto the given alias and off every other org"] = function()
-  child.lua([[H.mark_default("two")]])
-  eq(child.lua_get([[H.orgs[1].is_default]]), false)
-  eq(child.lua_get([[H.orgs[2].is_default]]), true)
-end
-
 T["write_target_org_to_config"] = new_set({
   hooks = {
     pre_case = function()
@@ -282,10 +262,13 @@ T["set_target_org_to"] = new_set({
       child.lua([[
         util = require("sf.util")
         util.show_err = function() end
-        util.set_target_org = function() end
+        -- "is_default" is derived from util.target_org at render time
+        -- (never stored on a record, see org_model.lua) -- simulate the
+        -- real set_target_org's effect on it instead of a pure no-op.
+        util.set_target_org = function(alias) util.target_org = alias end
         H.orgs = {
-          { alias = "org1", username = "user1", is_default = true, is_default_devhub = false },
-          { alias = "org2", username = "user2", is_default = false, is_default_devhub = false },
+          { alias = "org1", username = "user1" },
+          { alias = "org2", username = "user2" },
         }
         -- Mock write_target_org_to_config to succeed
         original_write = H.write_target_org_to_config
@@ -297,29 +280,9 @@ T["set_target_org_to"] = new_set({
   },
 })
 
-T["set_target_org_to"]["public wrapper calls mark_default"] = function()
-  child.lua([[
-    -- Spy on mark_default
-    original_mark_default = H.mark_default
-    mark_default_called = {}
-    H.mark_default = function(alias)
-      table.insert(mark_default_called, alias)
-      original_mark_default(alias)
-    end
-    
-    M.set_target_org_to("org2", false)
-  ]])
-  
-  local called = child.lua_get([[#mark_default_called > 0 and mark_default_called[1] == "org2"]])
-  eq(called, true)
-end
-
-T["set_target_org_to"]["marks the given alias as default"] = function()
-  child.lua([[
-    M.set_target_org_to("org2", false)
-  ]])
-  
-  eq(child.lua_get([[H.orgs[2].is_default]]), true)
+T["set_target_org_to"]["public wrapper updates util.target_org"] = function()
+  child.lua([[M.set_target_org_to("org2", false)]])
+  eq(child.lua_get([[util.target_org]]), "org2")
 end
 
 T["open_org"] = new_set({
@@ -499,8 +462,8 @@ T["open_dashboard"]["opens dashboard when orgs are available"] = function()
     util = require("sf.util")
     H = M.__test
     H.orgs = {
-      { alias = "org1", username = "user1", is_default = true, is_default_devhub = false },
-      { alias = "org2", username = "user2", is_default = false, is_default_devhub = false },
+      { alias = "org1", username = "user1" },
+      { alias = "org2", username = "user2" },
     }
     
     -- Mock the dashboard.open to avoid creating actual windows
@@ -527,10 +490,10 @@ T["set_target_org"] = new_set({
       child.lua([[
         util = require("sf.util")
         H = M.__test
-        util.set_target_org = function() end
+        util.set_target_org = function(alias) util.target_org = alias end
         H.orgs = {
-          { alias = "org1", username = "user1", is_default = false, is_default_devhub = false },
-          { alias = "org2", username = "user2", is_default = true, is_default_devhub = false },
+          { alias = "org1", username = "user1" },
+          { alias = "org2", username = "user2" },
         }
         -- Mock write_target_org_to_config to succeed by default
         H.write_target_org_to_config = function(alias, global)
@@ -580,7 +543,7 @@ T["set_target_org"]["calls vim.ui.select with formatted org items"] = function()
   eq(child.lua_get([[_G.called_prompt]]), "Local target_org:")
 end
 
-T["set_target_org"]["writes config and marks default when record is selected"] = function()
+T["set_target_org"]["writes config and updates util.target_org when record is selected"] = function()
   child.lua([[
     _G.write_called = false
     _G.write_alias = nil
@@ -591,16 +554,7 @@ T["set_target_org"]["writes config and marks default when record is selected"] =
       _G.write_global = global
       return true
     end
-    
-    _G.mark_called = false
-    _G.mark_alias = nil
-    local original_mark = H.mark_default
-    H.mark_default = function(alias)
-      _G.mark_called = true
-      _G.mark_alias = alias
-      original_mark(alias)
-    end
-    
+
     _G.select_callback = nil
     vim.ui.select = function(items, opts, callback)
       _G.select_callback = callback
@@ -616,8 +570,10 @@ T["set_target_org"]["writes config and marks default when record is selected"] =
   eq(child.lua_get([[_G.write_called]]), true)
   eq(child.lua_get([[_G.write_alias]]), "org2")
   eq(child.lua_get([[_G.write_global]]), false)
-  eq(child.lua_get([[_G.mark_called]]), true)
-  eq(child.lua_get([[_G.mark_alias]]), "org2")
+  -- "is_default" is derived from util.target_org, not a stored field (see
+  -- org_model.lua) -- the pre_case hook's util.set_target_org stub mirrors
+  -- the real one's effect on it.
+  eq(child.lua_get([[util.target_org]]), "org2")
 end
 
 T["set_target_org"]["ignores nil choice (user canceled)"] = function()
@@ -677,8 +633,8 @@ T["set_global_target_org"] = new_set({
         H = M.__test
         util.set_target_org = function() end
         H.orgs = {
-          { alias = "org1", username = "user1", is_default = false, is_default_devhub = false },
-          { alias = "org2", username = "user2", is_default = true, is_default_devhub = false },
+          { alias = "org1", username = "user1" },
+          { alias = "org2", username = "user2" },
         }
         H.write_target_org_to_config = function(alias, global)
           return true
@@ -763,8 +719,8 @@ T["diff_in_org"] = new_set({
         util = require("sf.util")
         H = M.__test
         H.orgs = {
-          { alias = "org1", username = "user1", is_default = false, is_default_devhub = false },
-          { alias = "org2", username = "user2", is_default = true, is_default_devhub = false },
+          { alias = "org1", username = "user1" },
+          { alias = "org2", username = "user2" },
         }
       ]])
     end,
@@ -920,7 +876,7 @@ T["delete_org"]["refuses a prod org without calling the API or CLI"] = function(
     _G._err = nil
     util.show_err = function(msg) _G._err = msg end
 
-    H.orgs = { { alias = "prod1", is_scratch = false, is_sandbox = false, is_prod = true } }
+    H.orgs = { { alias = "prod1", org_type = "production", } }
     M.delete_org(H.orgs[1], function() error("on_done must not fire") end)
   ]])
 
@@ -935,7 +891,7 @@ T["delete_org"]["scratch org: refuses when the record has no devhub_username"] =
     _G._err = nil
     util.show_err = function(msg) _G._err = msg end
 
-    H.orgs = { { alias = "scratch1", username = "u@scratch", is_scratch = true, is_sandbox = false } }
+    H.orgs = { { alias = "scratch1", org_type = "scratch", username = "u@scratch", } }
     M.delete_org(H.orgs[1], function() error("on_done must not fire") end)
   ]])
 
@@ -968,7 +924,7 @@ T["delete_org"]["scratch org: happy path queries ActiveScratchOrg on the devhub 
     util.silent_job_call = function(cmd) _G._logout_cmd = cmd end
 
     H.orgs = {
-      { alias = "scratch1", username = "u@scratch", is_scratch = true, is_sandbox = false, devhub_username = "hub@example.com" },
+      { alias = "scratch1", org_type = "scratch", username = "u@scratch", devhub_username = "hub@example.com" },
     }
 
     _G._on_done_called = false
@@ -993,7 +949,7 @@ T["delete_org"]["scratch org: a delete failure does not touch the local cache or
     rest_api.delete_std = function(_, _, _, cb) cb(false, "INSUFFICIENT_ACCESS") end
 
     H.orgs = {
-      { alias = "scratch1", username = "u@scratch", is_scratch = true, is_sandbox = false, devhub_username = "hub@example.com" },
+      { alias = "scratch1", org_type = "scratch", username = "u@scratch", devhub_username = "hub@example.com" },
     }
 
     _G._on_done_called = false
@@ -1012,7 +968,7 @@ T["delete_org"]["sandbox: shells out to `sf org delete sandbox` and cleans up th
       cb()
     end
 
-    H.orgs = { { alias = "sandbox1", is_scratch = false, is_sandbox = true } }
+    H.orgs = { { alias = "sandbox1", org_type = "sandbox", } }
 
     _G._on_done_called = false
     M.delete_org(H.orgs[1], function() _G._on_done_called = true end)
@@ -1027,7 +983,7 @@ T["delete_org"]["sandbox: a failed delete does not fire on_done or touch the cac
   child.lua([[
     util.system_call = function(cmd, _, err_msg) end -- cb never invoked: non-zero exit
 
-    H.orgs = { { alias = "sandbox1", is_scratch = false, is_sandbox = true } }
+    H.orgs = { { alias = "sandbox1", org_type = "sandbox", } }
 
     _G._on_done_called = false
     M.delete_org(H.orgs[1], function() _G._on_done_called = true end)
@@ -1092,7 +1048,7 @@ T["refresh_sandbox"]["refuses a non-sandbox record without touching the Dev Hub"
     _G._err = nil
     util.show_err = function(msg) _G._err = msg end
 
-    H.orgs = { { alias = "scratch1", is_scratch = true, is_sandbox = false } }
+    H.orgs = { { alias = "scratch1", org_type = "scratch", } }
     M.refresh_sandbox(H.orgs[1], function() error("on_done must not fire") end)
   ]])
 
@@ -1108,9 +1064,12 @@ T["refresh_sandbox"]["errors when no default Dev Hub is configured"] = function(
     util.show_err = function(msg) _G._err = msg end
 
     H.orgs = {
-      { alias = "sandbox1", is_scratch = false, is_sandbox = true, org_id = "00D000000000001EAA" },
-      { alias = "hub1", is_default_devhub = false },
+      { alias = "sandbox1", org_type = "sandbox", org_id = "00D000000000001EAA" },
+      { alias = "hub1" },
     }
+    -- No default Dev Hub configured -- see org_model.lua's doc comment on
+    -- why this isn't a field on the record.
+    H.default_devhub_alias = nil
     M.refresh_sandbox(H.orgs[1], function() error("on_done must not fire") end)
   ]])
 
@@ -1127,9 +1086,10 @@ T["refresh_sandbox"]["errors when the default Dev Hub has no matching SandboxPro
     util.show_err = function(msg) _G._err = msg end
 
     H.orgs = {
-      { alias = "sandbox1", is_scratch = false, is_sandbox = true, org_id = "00D000000000001EAA" },
-      { alias = "hub1", is_default_devhub = true },
+      { alias = "sandbox1", org_type = "sandbox", org_id = "00D000000000001EAA" },
+      { alias = "hub1" },
     }
+    H.default_devhub_alias = "hub1"
     M.refresh_sandbox(H.orgs[1], function() error("on_done must not fire") end)
   ]])
 
@@ -1159,9 +1119,10 @@ T["refresh_sandbox"]["happy path: looks up SandboxName via SandboxOrganization a
     end
 
     H.orgs = {
-      { alias = "sandbox1", is_scratch = false, is_sandbox = true, org_id = "00D000000000001EAAQ" },
-      { alias = "hub1", is_default_devhub = true },
+      { alias = "sandbox1", org_type = "sandbox", org_id = "00D000000000001EAAQ" },
+      { alias = "hub1" },
     }
+    H.default_devhub_alias = "hub1"
 
     _G._on_done_called = false
     M.refresh_sandbox(H.orgs[1], function() _G._on_done_called = true end)
@@ -1191,9 +1152,10 @@ T["refresh_sandbox"]["happy path: marks the sandbox pending in-memory and on dis
     end
 
     H.orgs = {
-      { alias = "sandbox1", is_scratch = false, is_sandbox = true, org_id = "00D000000000001EAAQ" },
-      { alias = "hub1", is_default_devhub = true },
+      { alias = "sandbox1", org_type = "sandbox", org_id = "00D000000000001EAAQ" },
+      { alias = "hub1" },
     }
+    H.default_devhub_alias = "hub1"
 
     M.refresh_sandbox(H.orgs[1], function() end)
   ]])
