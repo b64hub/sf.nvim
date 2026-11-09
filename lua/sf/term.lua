@@ -32,12 +32,16 @@ function Term.save_and_push(extra_params)
 
   vim.api.nvim_command("write!")
 
-  local builder = cmd_builder:new():cmd("project"):act("deploy start"):addParams("-d", "%:p")
+  -- `-c`/`--ignore-conflicts`: a conflict here just means the org copy's
+  -- timestamp moved since the last retrieve (e.g. someone else deployed
+  -- meanwhile) - pushing the file you're looking at is almost always what
+  -- you want, so skip the prompt by default instead of blocking the push.
+  local builder = cmd_builder:new():cmd("project"):act("deploy start"):addParams("-d", "%:p"):addParams("-c")
   if extra_params then
     builder:addParamStr(extra_params)
   end
   local cmd = builder:build()
-  terminal:run(cmd, nil, { label = "Deploy " .. vim.fn.expand("%:t"), category = "deploy" })
+  terminal:run(cmd, nil, { label = "Deploy " .. vim.fn.expand("%:t") .. " → " .. util.target_org, category = "deploy" })
 end
 
 function Term.push_delta(extra_params)
@@ -50,7 +54,7 @@ function Term.push_delta(extra_params)
     builder:addParamStr(extra_params)
   end
   local cmd = builder:build()
-  terminal:run(cmd, nil, { label = "Deploy project", category = "deploy" })
+  terminal:run(cmd, nil, { label = "Deploy project → " .. util.target_org, category = "deploy" })
 end
 
 function Term.retrieve(extra_params)
@@ -68,7 +72,7 @@ function Term.retrieve(extra_params)
     builder:addParamStr(extra_params)
   end
   local cmd = builder:build()
-  terminal:run(cmd, cb, { label = "Retrieve " .. vim.fn.fnamemodify(filename, ":t"), category = "retrieve" })
+  terminal:run(cmd, cb, { label = "Retrieve " .. vim.fn.fnamemodify(filename, ":t") .. " ← " .. util.target_org, category = "retrieve" })
 end
 
 function Term.retrieve_delta(extra_params)
@@ -81,7 +85,7 @@ function Term.retrieve_delta(extra_params)
     builder:addParamStr(extra_params)
   end
   local cmd = builder:build()
-  terminal:run(cmd, nil, { label = "Retrieve project", category = "retrieve" })
+  terminal:run(cmd, nil, { label = "Retrieve project ← " .. util.target_org, category = "retrieve" })
 end
 
 function Term.retrieve_package()
@@ -89,7 +93,7 @@ function Term.retrieve_package()
     return util.show_err("Target_org empty!")
   end
   local cmd = cmd_builder:new():cmd("project"):act("retrieve start"):addParams("-x", "%:p"):build()
-  terminal:run(cmd, nil, { label = "Retrieve package", category = "retrieve" })
+  terminal:run(cmd, nil, { label = "Retrieve package ← " .. util.target_org, category = "retrieve" })
 end
 
 function Term.run_anonymous_stdin(use_selection)

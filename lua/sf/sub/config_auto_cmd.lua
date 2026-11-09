@@ -1,7 +1,7 @@
-local U = require("sf.util")
-local M = {}
+local util = require("sf.util")
+local auto_cmd = {}
 
-M.set_auto_cmd_and_try_set_default_keys = function()
+auto_cmd.set_auto_cmd_and_try_set_default_keys = function()
   local sf_group = vim.api.nvim_create_augroup("SF", { clear = true })
 
   -- Disable "end of line" for relevant filetypes in sf project folder,
@@ -90,6 +90,7 @@ M.set_auto_cmd_and_try_set_default_keys = function()
     group = sf_group,
     callback = function()
       pcall(require("sf").refresh_target_org_from_disk)
+      pcall(util.warn_if_legacy_cache_dir_exists)
     end,
   })
 
@@ -185,7 +186,7 @@ M.set_auto_cmd_and_try_set_default_keys = function()
     group = sf_group,
     callback = function()
       local ok, diff_folder = pcall(function()
-        return U.get_plugin_folder_path() .. "diffs/"
+        return util.get_cache_dir() .. "diffs/"
       end)
       if ok then
         vim.fn.delete(diff_folder, "rf")
@@ -194,4 +195,4 @@ M.set_auto_cmd_and_try_set_default_keys = function()
   })
 end
 
-return M
+return auto_cmd

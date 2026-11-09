@@ -1,40 +1,40 @@
-local T = require("sf.term")
-local B = require("sf.sub.cmd_builder")
-local TS = require("sf.ts")
-local U = require("sf.util")
-local S = require("sf.sub.test_sign")
+local term = require("sf.term")
+local cmd_builder = require("sf.sub.cmd_builder")
+local ts = require("sf.ts")
+local util = require("sf.util")
+local test_sign = require("sf.sub.test_sign")
 
-local H = {}
-local P = {}
+local helpers = {}
+local picker = {}
 local Test = {}
 
-Test.is_sign_enabled = S.is_enabled
-Test.refresh_and_place_sign = S.refresh_and_place
-Test.setup_sign = S.setup
-Test.toggle_sign = S.toggle
-Test.uncovered_jump_forward = S.uncovered_jump_forward
-Test.uncovered_jump_backward = S.uncovered_jump_backward
-Test.refresh_current_file_covered_percent = S.refresh_current_file_covered_percent
+Test.is_sign_enabled = test_sign.is_enabled
+Test.refresh_and_place_sign = test_sign.refresh_and_place
+Test.setup_sign = test_sign.setup
+Test.toggle_sign = test_sign.toggle
+Test.uncovered_jump_forward = test_sign.uncovered_jump_forward
+Test.uncovered_jump_backward = test_sign.uncovered_jump_backward
+Test.refresh_current_file_covered_percent = test_sign.refresh_current_file_covered_percent
 Test.covered_percent = function()
-  return S.covered_percent
+  return test_sign.covered_percent
 end
 
 Test.open = function()
-  P.open()
+  picker.open()
 end
 
 Test.run_current_test_with_coverage = function()
-  local ok_class, test_class_name = pcall(H.validateInTestClass)
+  local ok_class, test_class_name = pcall(helpers.validateInTestClass)
   if not ok_class then
     return
   end
 
-  local ok_method, test_name = pcall(H.validateInTestMethod)
+  local ok_method, test_name = pcall(helpers.validateInTestMethod)
   if not ok_method then
     return
   end
 
-  local cmd = B:new()
+  local cmd = cmd_builder:new()
     :cmd("apex")
     :act("run test")
     :addParams({
@@ -45,25 +45,25 @@ Test.run_current_test_with_coverage = function()
     })
     :build()
 
-  U.last_tests = cmd
-  T.run(cmd, H.save_test_coverage_locally, { label = test_class_name .. "." .. test_name, category = "test" })
+  util.last_tests = cmd
+  term.run(cmd, helpers.save_test_coverage_locally, { label = test_class_name .. "." .. test_name, category = "test" })
 end
 
 ---@param cb function|nil
 ---@return nil
 Test.run_current_test = function(cb)
-  local ok_class, test_class_name = pcall(H.validateInTestClass)
+  local ok_class, test_class_name = pcall(helpers.validateInTestClass)
   if not ok_class then
     return
   end
 
-  local ok_method, test_name = pcall(H.validateInTestMethod)
+  local ok_method, test_name = pcall(helpers.validateInTestMethod)
   if not ok_method then
     return
   end
 
-  -- local cmd = string.format("sf apex run test --tests %s.%s -r human -w 5 %s-o %s", test_class_name, test_name, extraParams, U.get())
-  local cmd = B:new()
+  -- local cmd = string.format("sf apex run test --tests %s.%s -r human -w 5 %s-o %s", test_class_name, test_name, extraParams, util.get())
+  local cmd = cmd_builder:new()
     :cmd("apex")
     :act("run test")
     :addParams({
@@ -74,17 +74,17 @@ Test.run_current_test = function(cb)
     })
     :build()
 
-  U.last_tests = cmd
-  T.run(cmd, cb, { label = test_class_name .. "." .. test_name, category = "test" })
+  util.last_tests = cmd
+  term.run(cmd, cb, { label = test_class_name .. "." .. test_name, category = "test" })
 end
 
 Test.run_all_tests_in_this_file_with_coverage = function()
-  local ok_class, test_class_name = pcall(H.validateInTestClass)
+  local ok_class, test_class_name = pcall(helpers.validateInTestClass)
   if not ok_class then
     return
   end
 
-  local cmd = B:new()
+  local cmd = cmd_builder:new()
     :cmd("apex")
     :act("run test")
     :addParams({
@@ -95,20 +95,20 @@ Test.run_all_tests_in_this_file_with_coverage = function()
     })
     :build()
 
-  U.last_tests = cmd
-  T.run(cmd, H.save_test_coverage_locally, { label = test_class_name, category = "test" })
+  util.last_tests = cmd
+  term.run(cmd, helpers.save_test_coverage_locally, { label = test_class_name, category = "test" })
 end
 
 ---@param cb function
 ---@return nil
 Test.run_all_tests_in_this_file = function(cb)
-  local ok_class, test_class_name = pcall(H.validateInTestClass)
+  local ok_class, test_class_name = pcall(helpers.validateInTestClass)
   if not ok_class then
     return
   end
 
-  -- local cmd = string.format("sf apex run test --class-names %s -r human -w 5 %s-o %s", test_class_name, extraParams, U.get())
-  local cmd = B:new()
+  -- local cmd = string.format("sf apex run test --class-names %s -r human -w 5 %s-o %s", test_class_name, extraParams, util.get())
+  local cmd = cmd_builder:new()
     :cmd("apex")
     :act("run test")
     :addParams({
@@ -119,21 +119,21 @@ Test.run_all_tests_in_this_file = function(cb)
     })
     :build()
 
-  U.last_tests = cmd
-  T.run(cmd, cb, { label = test_class_name, category = "test" })
+  util.last_tests = cmd
+  term.run(cmd, cb, { label = test_class_name, category = "test" })
 end
 
 Test.repeat_last_tests = function()
-  if U.is_empty_str(U.last_tests) then
-    return U.show_warn("Last test command is empty.")
+  if util.is_empty_str(util.last_tests) then
+    return util.show_warn("Last test command is empty.")
   end
 
-  T.run(U.last_tests, nil, { label = "Repeat last test", category = "test" })
+  term.run(util.last_tests, nil, { label = "Repeat last test", category = "test" })
 end
 
 Test.run_local_tests = function()
-  -- local cmd = string.format("sf apex run test --test-level RunLocalTests --code-coverage -r human --wait 180 -o %s", U.get())
-  local cmd = B:new()
+  -- local cmd = string.format("sf apex run test --test-level RunLocalTests --code-coverage -r human --wait 180 -o %s", util.get())
+  local cmd = cmd_builder:new()
     :cmd("apex")
     :act("run test")
     :addParams({
@@ -144,12 +144,12 @@ Test.run_local_tests = function()
     })
     :build()
 
-  U.last_tests = cmd
-  T.run(cmd, nil, { label = "All local tests", category = "test" })
+  util.last_tests = cmd
+  term.run(cmd, nil, { label = "All local tests", category = "test" })
 end
 
 Test.run_all_jests = function()
-  T.run("npm run test:unit:coverage", nil, { label = "Jest tests", category = "test" })
+  term.run("npm run test:unit:coverage", nil, { label = "Jest tests", category = "test" })
 end
 
 Test.run_jest_file = function()
@@ -157,24 +157,24 @@ Test.run_jest_file = function()
     vim.notify("Not in a jest test file", vim.log.levels.ERROR)
     return
   end
-  T.run(string.format("npm run test:unit -- -- %s", vim.fn.expand("%")), nil, { label = "Jest " .. vim.fn.expand("%:t"), category = "test" })
+  term.run(string.format("npm run test:unit -- -- %s", vim.fn.expand("%")), nil, { label = "Jest " .. vim.fn.expand("%:t"), category = "test" })
 end
 
 -- helper;
 
-H.validateInTestClass = function()
-  local test_class_name = TS.get_test_class_name()
-  if U.is_empty_str(test_class_name) then
-    U.notify_then_error("Not in a test class.")
+helpers.validateInTestClass = function()
+  local test_class_name = ts.get_test_class_name()
+  if util.is_empty_str(test_class_name) then
+    util.notify_then_error("Not in a test class.")
   end
 
   return test_class_name
 end
 
-H.validateInTestMethod = function()
-  local test_name = TS.get_current_test_method_name()
-  if U.is_empty_str(test_name) then
-    U.notify_then_error("Cursor not in a test method.")
+helpers.validateInTestMethod = function()
+  local test_name = ts.get_current_test_method_name()
+  if util.is_empty_str(test_name) then
+    util.notify_then_error("Cursor not in a test method.")
   end
 
   return test_name
@@ -182,7 +182,7 @@ end
 
 ---@param lines table
 ---@return any
-H.extract_test_run_id = function(lines)
+helpers.extract_test_run_id = function(lines)
   for _, line in ipairs(lines) do
     if string.find(line, "Test Run Id") then
       return string.match(line, "Test Run Id%s*(%w+)")
@@ -194,21 +194,21 @@ end
 ---@param self table
 ---@param cmd string
 ---@param exit_code number
-H.save_test_coverage_locally = function(self, cmd, exit_code)
-  U.create_plugin_folder_if_not_exist()
+helpers.save_test_coverage_locally = function(self, cmd, exit_code)
+  util.create_cache_dir_if_not_exist()
 
   local lines = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
-  local id = H.extract_test_run_id(lines)
+  local id = helpers.extract_test_run_id(lines)
   if id == nil then
     return
   end
 
   local file_name = "test_result.json"
-  -- local cmd = 'sf apex get test -i ' .. id .. ' -c --json > ' .. U.get_plugin_folder_path() .. file_name
-  local cmd = B:new():cmd("apex"):act("get test"):addParams("-i", id):addParams("-c"):addParams("--json"):build()
-  cmd = cmd .. " > " .. U.get_plugin_folder_path() .. file_name
+  -- local cmd = 'sf apex get test -i ' .. id .. ' -c --json > ' .. util.get_cache_dir() .. file_name
+  local cmd = cmd_builder:new():cmd("apex"):act("get test"):addParams("-i", id):addParams("-c"):addParams("--json"):build()
+  cmd = cmd .. " > " .. util.get_cache_dir() .. file_name
 
-  U.silent_job_call(cmd, "Code coverage saved.", "Code coverage save failed! " .. cmd, S.invalidate_cache_and_try_place)
+  util.silent_job_call(cmd, "Code coverage saved.", "Code coverage save failed! " .. cmd, test_sign.invalidate_cache_and_try_place)
 end
 
 -- prompt below
@@ -217,22 +217,22 @@ local api = vim.api
 local buftype = "nowrite"
 local filetype = "sf_test_prompt"
 
-P.buf = nil
-P.win = nil
-P.class = nil
-P.tests = nil
-P.test_num = nil
-P.selected_tests = {}
+picker.buf = nil
+picker.win = nil
+picker.class = nil
+picker.tests = nil
+picker.test_num = nil
+picker.selected_tests = {}
 
-P.open = function()
-  local class = TS.get_test_class_name()
-  if U.is_empty_str(class) then
-    U.notify_then_error("Not an Apex test class.")
+picker.open = function()
+  local class = ts.get_test_class_name()
+  if util.is_empty_str(class) then
+    util.notify_then_error("Not an Apex test class.")
   end
 
-  local test_names = TS.get_test_method_names_in_curr_file()
+  local test_names = ts.get_test_method_names_in_curr_file()
   if vim.tbl_isempty(test_names) then
-    U.show("no Apex test found.")
+    util.show("no Apex test found.")
   end
 
   local tests = {}
@@ -242,34 +242,34 @@ P.open = function()
     test_num = test_num + 1
   end
 
-  P.class = class
-  P.tests = tests
-  P.test_num = test_num
+  picker.class = class
+  picker.tests = tests
+  picker.test_num = test_num
 
-  local buf = P.use_existing_or_create_buf()
-  local win = P.use_existing_or_create_win()
-  P.buf = buf
-  P.win = win
+  local buf = picker.use_existing_or_create_buf()
+  local win = picker.use_existing_or_create_win()
+  picker.buf = buf
+  picker.win = win
 
   api.nvim_win_set_buf(win, buf)
 
-  P.set_keys()
+  picker.set_keys()
 
   vim.bo[buf].modifiable = true
-  P.display()
+  picker.display()
   vim.bo[buf].modifiable = false
 end
 
-P.set_keys = function()
+picker.set_keys = function()
   vim.keymap.set("n", "x", function()
-    P.toggle()
+    picker.toggle()
   end, { buffer = true, noremap = true })
 
   local create_cmd = function(tbl)
-    local cmd_builder = B:new():cmd("apex"):act("run test"):addParams(tbl)
+    local cmd_builder = cmd_builder:new():cmd("apex"):act("run test"):addParams(tbl)
 
     local test_params = ""
-    for _, test in ipairs(P.selected_tests) do
+    for _, test in ipairs(picker.selected_tests) do
       test_params = test_params .. " -t " .. test
     end
 
@@ -279,51 +279,51 @@ P.set_keys = function()
   end
 
   vim.keymap.set("n", "cc", function()
-    if vim.tbl_isempty(P.selected_tests) then
-      return U.show_err("No test is selected.")
+    if vim.tbl_isempty(picker.selected_tests) then
+      return util.show_err("No test is selected.")
     end
 
     local cmd = create_cmd({ ["-w"] = vim.g.sf.sf_wait_time, ["-r"] = "human" })
 
-    P.close()
-    T.run(cmd, nil, { label = P.class .. " (" .. #P.selected_tests .. " tests)", category = "test" })
-    U.last_tests = cmd
-    P.selected_tests = {}
+    picker.close()
+    term.run(cmd, nil, { label = picker.class .. " (" .. #picker.selected_tests .. " tests)", category = "test" })
+    util.last_tests = cmd
+    picker.selected_tests = {}
   end, { buffer = true, noremap = true })
 
   vim.keymap.set("n", "CC", function()
-    if vim.tbl_isempty(P.selected_tests) then
-      return U.show_err("No test is selected.")
+    if vim.tbl_isempty(picker.selected_tests) then
+      return util.show_err("No test is selected.")
     end
 
     local cmd = create_cmd({ ["-w"] = vim.g.sf.sf_wait_time, ["-r"] = "human", ["-c"] = "" })
 
-    P.close()
-    T.run(cmd, H.save_test_coverage_locally, { label = P.class .. " (" .. #P.selected_tests .. " tests)", category = "test" })
-    U.last_tests = cmd
-    P.selected_tests = {}
+    picker.close()
+    term.run(cmd, helpers.save_test_coverage_locally, { label = picker.class .. " (" .. #picker.selected_tests .. " tests)", category = "test" })
+    util.last_tests = cmd
+    picker.selected_tests = {}
   end, { buffer = true, noremap = true })
 end
 
-P.display = function()
-  api.nvim_set_current_win(P.win)
+picker.display = function()
+  api.nvim_set_current_win(picker.win)
   local names = {}
   table.insert(names, '** "x": toggle tests; "cc": run tests; "CC": run tests with code coverage.')
 
-  for _, test in ipairs(P.tests) do
-    local class_test = string.format("%s.%s", P.class, test)
-    if vim.tbl_contains(P.selected_tests, class_test) then
+  for _, test in ipairs(picker.tests) do
+    local class_test = string.format("%s.%s", picker.class, test)
+    if vim.tbl_contains(picker.selected_tests, class_test) then
       table.insert(names, "[x] " .. test)
     else
       table.insert(names, "[ ] " .. test)
     end
   end
-  api.nvim_buf_set_lines(P.buf, 0, 100, false, names)
+  api.nvim_buf_set_lines(picker.buf, 0, 100, false, names)
 end
 
-P.use_existing_or_create_buf = function()
-  if P.buf and api.nvim_buf_is_loaded(P.buf) then
-    return P.buf
+picker.use_existing_or_create_buf = function()
+  if picker.buf and api.nvim_buf_is_loaded(picker.buf) then
+    return picker.buf
   end
 
   local buf = api.nvim_create_buf(false, false)
@@ -333,13 +333,13 @@ P.use_existing_or_create_buf = function()
   return buf
 end
 
-P.use_existing_or_create_win = function()
-  local win_hight = P.test_num + 2
+picker.use_existing_or_create_win = function()
+  local win_hight = picker.test_num + 2
 
-  if P.win and api.nvim_win_is_valid(P.win) then
-    api.nvim_set_current_win(P.win)
-    api.nvim_win_set_height(P.win, win_hight)
-    return P.win
+  if picker.win and api.nvim_win_is_valid(picker.win) then
+    api.nvim_set_current_win(picker.win)
+    api.nvim_win_set_height(picker.win, win_hight)
+    return picker.win
   end
 
   api.nvim_command(win_hight .. "split")
@@ -347,9 +347,9 @@ P.use_existing_or_create_win = function()
   return api.nvim_get_current_win()
 end
 
-P.toggle = function()
+picker.toggle = function()
   if vim.bo[0].filetype ~= filetype then
-    return U.show_err("file-type must be: " .. filetype)
+    return util.show_err("file-type must be: " .. filetype)
   end
 
   vim.bo[0].modifiable = true
@@ -363,38 +363,38 @@ P.toggle = function()
 
   local curr_value = api.nvim_buf_get_text(0, row_index, 1, row_index, 2, {})
 
-  local name = P.tests[row_index]
-  local class_test = string.format("%s.%s", P.class, name)
-  local index = U.list_find(P.selected_tests, class_test)
+  local name = picker.tests[row_index]
+  local class_test = string.format("%s.%s", picker.class, name)
+  local index = util.list_find(picker.selected_tests, class_test)
 
   if curr_value[1] == "x" then
     if index ~= nil then
-      table.remove(P.selected_tests, index)
+      table.remove(picker.selected_tests, index)
     end
     api.nvim_buf_set_text(0, row_index, 1, row_index, 2, { " " })
   elseif curr_value[1] == " " then
     if index == nil then
-      table.insert(P.selected_tests, class_test)
+      table.insert(picker.selected_tests, class_test)
     end
     api.nvim_buf_set_text(0, row_index, 1, row_index, 2, { "x" })
   end
 
-  U.show("Selected: " .. vim.tbl_count(P.selected_tests))
+  util.show("Selected: " .. vim.tbl_count(picker.selected_tests))
 
   vim.bo[0].modifiable = false
 end
 
 ---@param param_str string
 ---@return nil
-P.build_tests_cmd = function(param_str)
+picker.build_tests_cmd = function(param_str)
   return t
   --   local cmd = string.format('sf apex run test%s %s', t, param_str)
   --   return cmd
 end
 
-P.close = function()
-  if P.win and api.nvim_win_is_valid(P.win) then
-    api.nvim_win_close(P.win, false)
+picker.close = function()
+  if picker.win and api.nvim_win_is_valid(picker.win) then
+    api.nvim_win_close(picker.win, false)
   end
 end
 

@@ -27,8 +27,8 @@ local test_set = new_set({
 test_set["open: creates two windows"] = function()
   child.lua([[
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
-      { alias = "org2", username = "user2", is_sandbox = true, is_default = false, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
+      { alias = "org2", username = "user2", org_type = "sandbox", expiration_date = nil },
     }
     dashboard.open(records, { prompt = "Orgs" })
   ]])
@@ -43,8 +43,8 @@ end
 test_set["open: left buffer contains first org alias"] = function()
   child.lua([[
     records = {
-      { alias = "myorg", username = "user@example.com", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
-      { alias = "other", username = "user2", is_sandbox = true, is_default = false, is_default_devhub = false, expiration_date = nil },
+      { alias = "myorg", username = "user@example.com", org_type = "production", expiration_date = nil },
+      { alias = "other", username = "user2", org_type = "sandbox", expiration_date = nil },
     }
     dashboard.open(records, { prompt = "Orgs" })
   ]])
@@ -68,7 +68,7 @@ end
 test_set["open: q closes both windows"] = function()
   child.lua([[
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
     }
     dashboard.open(records, { prompt = "Orgs" })
   ]])
@@ -89,8 +89,8 @@ end
 test_set["open: singleton guard prevents duplicate dashboards"] = function()
   child.lua([[
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
-      { alias = "org2", username = "user2", is_sandbox = true, is_default = false, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
+      { alias = "org2", username = "user2", org_type = "sandbox", expiration_date = nil },
     }
     dashboard.open(records, { prompt = "Orgs" })
   ]])
@@ -126,7 +126,7 @@ end
 test_set["view registry: footer contains registered view keys"] = function()
   child.lua([[
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
     }
     dashboard.open(records, { prompt = "Orgs" })
   ]])
@@ -158,8 +158,8 @@ end
 test_set["view registry: can add and use a second view"] = function()
   child.lua([[
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
-      { alias = "org2", username = "user2", is_sandbox = true, is_default = false, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
+      { alias = "org2", username = "user2", org_type = "sandbox", expiration_date = nil },
     }
     
     -- Add a fake view to dashboard_views
@@ -214,7 +214,7 @@ end
 test_set["view registry: cache hit prevents re-fetch"] = function()
   child.lua([[
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
     }
     
     -- Add a view with fetch call counting
@@ -292,8 +292,8 @@ test_set["action entry: spy function is called with record"] = function()
   child.lua([[
     action_spy = { called = false, record_alias = nil }
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = false, is_default_devhub = false, expiration_date = nil },
-      { alias = "org2", username = "user2", is_sandbox = true, is_default = false, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
+      { alias = "org2", username = "user2", org_type = "sandbox", expiration_date = nil },
     }
     
     -- Add an action-only view with a spy function
@@ -351,7 +351,7 @@ test_set["refresh key 'r': re-fetches org list and invalidates the active view's
     end
 
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
     }
 
     -- A fake view (key 'z' -- deliberately not 'f', which the real logs
@@ -410,13 +410,18 @@ test_set["action entry: dashboard_api.repaint_list invoked after action"] = func
   child.lua([[
     helpers = require("sf.org").__test
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
-      { alias = "org2", username = "user2", is_sandbox = true, is_default = false, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
+      { alias = "org2", username = "user2", org_type = "sandbox", expiration_date = nil },
     }
     helpers.orgs = records
     
-    -- Add an action that tracks if repaint_list is called
+    -- Add an action that tracks if repaint_list is called. "is_default"
+    -- is derived from util.target_org at render time (never stored on a
+    -- record, see org_model.lua), so "making org2 the default" here is
+    -- just updating that, the same way Org.set_target_org_to does.
     repaint_called = false
+    util = require("sf.util")
+    util.set_target_org = function(alias) util.target_org = alias end
     table.insert(dashboard_views, {
       id = "toggle_default",
       key = "t",
@@ -424,7 +429,7 @@ test_set["action entry: dashboard_api.repaint_list invoked after action"] = func
       fetch = nil,
       render = nil,
       action = function(record, dashboard_api)
-        helpers.mark_default(record.alias)
+        util.set_target_org(record.alias)
         dashboard_api.repaint_list()
         repaint_called = true
       end,
@@ -447,9 +452,8 @@ test_set["action entry: dashboard_api.repaint_list invoked after action"] = func
   local repaint_called = child.lua_get([[repaint_called]])
   eq(repaint_called, true)
   
-  -- Verify the is_default field was mutated
-  eq(child.lua_get([[helpers.orgs[1].is_default]]), false)
-  eq(child.lua_get([[helpers.orgs[2].is_default]]), true)
+  -- Verify the target org was updated
+  eq(child.lua_get([[util.target_org]]), "org2")
 
   -- Verify the *rendered buffer* actually reflects the new default -- this
   -- is the real point of repaint_list: without an actual repaint, the
@@ -476,7 +480,7 @@ end
 test_set["winbar tab strip: renders and is clickable"] = function()
   child.lua([[
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
     }
     
     org_view = require("sf.ui.org_view")
@@ -515,7 +519,7 @@ end
 test_set["handle_tab_click: switches view and returns focus to list"] = function()
   child.lua([[
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
     }
     
     org_view = require("sf.ui.org_view")
@@ -573,7 +577,7 @@ end
 test_set["footer: shows action-only views, not tabs; includes f, r, q"] = function()
   child.lua([[
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
     }
     
     org_view = require("sf.ui.org_view")
@@ -637,7 +641,7 @@ test_set["refresh key 'r': invalidates org_display cache"] = function()
     end
 
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
     }
 
     dashboard.open(records, { prompt = "Orgs" })
@@ -686,10 +690,17 @@ test_set["prefetch: eager warm-up fetches default/devhub orgs"] = function()
       end)
     end
     
+    -- "default"/"default devhub" are never stored on a record (see
+    -- org_model.lua) -- the dashboard's warm-up compares against these
+    -- directly instead.
+    util = require("sf.util")
+    util.target_org = "default_org"
+    require("sf.org").__test.default_devhub_alias = "devhub_org"
+
     records = {
-      { alias = "default_org", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
-      { alias = "devhub_org", username = "user2", is_default = false, is_default_devhub = true, is_prod = false, is_sandbox = false, expiration_date = nil },
-      { alias = "other_org", username = "user3", is_default = false, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "default_org", username = "user1", org_type = "production", expiration_date = nil },
+      { alias = "devhub_org", username = "user2", org_type = "production", expiration_date = nil },
+      { alias = "other_org", username = "user3", org_type = "production", expiration_date = nil },
     }
     
     dashboard.open(records, { prompt = "Orgs" })
@@ -740,7 +751,7 @@ test_set["prefetch: #records == 1 skips eager prefetch"] = function()
     end
     
     records = {
-      { alias = "single_org", username = "user1", is_default = true, is_default_devhub = true, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "single_org", username = "user1", org_type = "production", expiration_date = nil },
     }
     
     dashboard.open(records, { prompt = "Orgs" })
@@ -785,7 +796,7 @@ test_set["prefetch: cache hit prevents re-fetch on tab switch"] = function()
     end
     
     records = {
-      { alias = "cache_test_org", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "cache_test_org", username = "user1", org_type = "production", expiration_date = nil },
     }
     
     dashboard.open(records, { prompt = "Orgs" })
@@ -840,7 +851,7 @@ test_set["arrow keys: <Up>/<Down> scroll view window, not org list"] = function(
     end
     
     records = {
-      { alias = "tall_test_org", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "tall_test_org", username = "user1", org_type = "production", expiration_date = nil },
     }
     
     dashboard.open(records, { prompt = "Orgs" })
@@ -918,7 +929,7 @@ test_set["arrow keys: <C-d>/<C-u> still scroll half-page"] = function()
     end
     
     records = {
-      { alias = "hpage_test_org", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "hpage_test_org", username = "user1", org_type = "production", expiration_date = nil },
     }
     
     dashboard.open(records, { prompt = "Orgs" })
@@ -983,8 +994,8 @@ test_set["arrow keys: j/k still control org selection, not view scroll"] = funct
     end
     
     records = {
-      { alias = "org_a", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
-      { alias = "org_b", username = "user2", is_default = false, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "org_a", username = "user1", org_type = "production", expiration_date = nil },
+      { alias = "org_b", username = "user2", org_type = "production", expiration_date = nil },
     }
     
     dashboard.open(records, { prompt = "Orgs" })
@@ -1042,7 +1053,7 @@ test_set["disk cache: a cacheable tab persists its result and seeds the next ope
     local util = require("sf.util")
     TMP_CACHE_DIR = vim.fn.tempname() .. "/"
     vim.fn.mkdir(TMP_CACHE_DIR, "p")
-    util.get_plugin_folder_path = function() return TMP_CACHE_DIR end
+    util.get_cache_dir = function() return TMP_CACHE_DIR end
 
     -- Swap the real "packages" view's fetch for a counting/delayable stub.
     -- Its id stays "packages" -- what org_dashboard.lua's disk-cache
@@ -1072,7 +1083,7 @@ test_set["disk cache: a cacheable tab persists its result and seeds the next ope
     end
 
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
     }
 
     dashboard.open(records, { prompt = "Orgs" })
@@ -1133,11 +1144,15 @@ test_set["disk cache: a failed background refresh keeps showing the seeded data 
     local util = require("sf.util")
     TMP_CACHE_DIR = vim.fn.tempname() .. "/"
     vim.fn.mkdir(TMP_CACHE_DIR, "p")
-    util.get_plugin_folder_path = function() return TMP_CACHE_DIR end
-    util.write_cache_json("dashboard_org1_packages.json", {
-      {
-        SubscriberPackage = { Name = "SeededPkg", NamespacePrefix = vim.NIL },
-        SubscriberPackageVersion = { MajorVersion = 1, MinorVersion = 0 },
+    util.get_cache_dir = function() return TMP_CACHE_DIR end
+    -- File-per-org layout: every cacheable view for one org shares one
+    -- JSON file (orgs/<alias>.json), keyed by view id -- see Org.org_cache.
+    util.write_cache_json("orgs/org1.json", {
+      packages = {
+        {
+          SubscriberPackage = { Name = "SeededPkg", NamespacePrefix = vim.NIL },
+          SubscriberPackageVersion = { MajorVersion = 1, MinorVersion = 0 },
+        },
       },
     })
 
@@ -1152,7 +1167,7 @@ test_set["disk cache: a failed background refresh keeps showing the seeded data 
     end
 
     records = {
-      { alias = "org1", username = "user1", is_prod = true, is_default = true, is_default_devhub = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
     }
 
     dashboard.open(records, { prompt = "Orgs" })
@@ -1213,7 +1228,7 @@ test_set["CR on logs tab: downloads scoped to that org's alias, opens the log, a
     end
 
     records = {
-      { alias = "myorg", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "myorg", username = "user1", org_type = "production", expiration_date = nil },
     }
     dashboard.open(records, { prompt = "Orgs" })
   ]])
@@ -1233,9 +1248,9 @@ test_set["CR on logs tab: downloads scoped to that org's alias, opens the log, a
   local download_args = child.lua_get([[_G.download_args]])
   eq(download_args.log_id, "07L1")
   eq(download_args.alias, "myorg")
-  -- sfdx-conventional location, not the sf_cache plugin folder.
+  -- sfdx-conventional location, not the cache dir.
   eq(download_args.dir:find(".sfdx/tools/debug/logs/", 1, true) ~= nil, true)
-  eq(download_args.dir:find("sf_cache", 1, true) == nil, true)
+  eq(download_args.dir:find(".nvim/sf", 1, true) == nil, true)
   eq(child.lua_get([[_G.opened_path ~= nil]]), true)
   -- Dashboard floats gone -- back to whatever window count there was
   -- before `dashboard.open`, not stuck showing log text in the list pane.
@@ -1263,7 +1278,7 @@ test_set["CR on logs tab: still works focused directly on the view buffer"] = fu
     util.try_open_file = function() end
 
     records = {
-      { alias = "myorg", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "myorg", username = "user1", org_type = "production", expiration_date = nil },
     }
     dashboard.open(records, { prompt = "Orgs" })
   ]])
@@ -1311,7 +1326,7 @@ test_set["D on logs tab: downloads without opening or closing the dashboard, so 
     end
 
     records = {
-      { alias = "myorg", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "myorg", username = "user1", org_type = "production", expiration_date = nil },
     }
     dashboard.open(records, { prompt = "Orgs" })
   ]])
@@ -1344,6 +1359,156 @@ test_set["D on logs tab: downloads without opening or closing the dashboard, so 
   eq(still_open, 2)
 end
 
+test_set["D outside logs tab: refuses a prod org without prompting"] = function()
+  child.lua([[
+    util = require("sf.util")
+    Org = require("sf.org")
+
+    _G.err_msg = nil
+    util.show_err = function(msg) _G.err_msg = msg end
+    vim.ui.input = function() error("must not prompt for a prod org") end
+    Org.delete_org = function() error("must not be called for a prod org") end
+
+    records = {
+      { alias = "prod1", username = "user1", org_type = "production", expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("D")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  expect.match(child.lua_get([[_G.err_msg]]), "scratch orgs and sandboxes")
+end
+
+test_set["D outside logs tab: a 'n' answer cancels without deleting"] = function()
+  child.lua([[
+    Org = require("sf.org")
+    vim.ui.input = function(_, cb) cb("n") end
+    Org.delete_org = function() error("must not be called when the answer isn't y") end
+
+    records = {
+      { alias = "scratch1", username = "user1", org_type = "scratch", expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("D")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  -- Reaching here without the error above firing is the assertion; nothing
+  -- else to check.
+end
+
+test_set["D outside logs tab: a 'y' answer deletes the org under the cursor and repaints the list"] = function()
+  child.lua([[
+    Org = require("sf.org")
+    vim.ui.input = function(_, cb) cb("y") end
+
+    _G.deleted_alias = nil
+    Org.delete_org = function(record, on_done)
+      _G.deleted_alias = record.alias
+      on_done()
+    end
+
+    records = {
+      { alias = "sandbox1", username = "user1", org_type = "sandbox", expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("D")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  eq(child.lua_get([[_G.deleted_alias]]), "sandbox1")
+end
+
+test_set["? help: opens an overlay with descriptions longer than the shortened footer labels, and toggles closed"] = function()
+  child.lua([[
+    records = {
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  local windows_before = child.lua_get([[#vim.api.nvim_list_wins()]])
+
+  child.lua([[vim.api.nvim_input("?")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  local windows_during = child.lua_get([[#vim.api.nvim_list_wins()]])
+  eq(windows_during, windows_before + 1)
+
+  local help_text = child.lua([[
+    local lines
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      local text = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+      if text:find("Set local target org", 1, true) then
+        lines = text
+      end
+    end
+    return lines
+  ]])
+  expect.match(help_text, "Set local target org")
+  expect.match(help_text, "Delete org %b()")
+
+  child.lua([[vim.api.nvim_input("?")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  local windows_after = child.lua_get([[#vim.api.nvim_list_wins()]])
+  eq(windows_after, windows_before)
+end
+
+test_set["R: refuses a non-sandbox without prompting"] = function()
+  child.lua([[
+    util = require("sf.util")
+    Org = require("sf.org")
+
+    _G.err_msg = nil
+    util.show_err = function(msg) _G.err_msg = msg end
+    vim.ui.input = function() error("must not prompt for a non-sandbox") end
+    Org.refresh_sandbox = function() error("must not be called for a non-sandbox") end
+
+    records = {
+      { alias = "scratch1", username = "user1", org_type = "scratch", expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("R")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  expect.match(child.lua_get([[_G.err_msg]]), "sandboxes can be refreshed")
+end
+
+test_set["R on a sandbox: prompts, then requests a refresh through Org.refresh_sandbox on 'y'"] = function()
+  child.lua([[
+    Org = require("sf.org")
+    vim.ui.input = function(_, cb) cb("y") end
+
+    _G.refreshed_alias = nil
+    Org.refresh_sandbox = function(record, on_done)
+      _G.refreshed_alias = record.alias
+      on_done()
+    end
+
+    records = {
+      { alias = "sandbox1", username = "user1", org_type = "sandbox", expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("R")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  eq(child.lua_get([[_G.refreshed_alias]]), "sandbox1")
+end
+
 test_set["navigate: opens a fresh dashboard positioned on the given org + tab"] = function()
   child.lua([[
     Org = require("sf.org")
@@ -1355,8 +1520,8 @@ test_set["navigate: opens a fresh dashboard positioned on the given org + tab"] 
     end
 
     records = {
-      { alias = "org1", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
-      { alias = "org2", username = "user2", is_default = false, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
+      { alias = "org2", username = "user2", org_type = "production", expiration_date = nil },
     }
     dashboard.navigate(records, { prompt = "Orgs", view_id = "logs", alias = "org2" })
   ]])
@@ -1379,8 +1544,8 @@ test_set["navigate: reuses an already-open session instead of stacking a second 
     end
 
     records = {
-      { alias = "org1", username = "user1", is_default = true, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
-      { alias = "org2", username = "user2", is_default = false, is_default_devhub = false, is_prod = false, is_sandbox = false, expiration_date = nil },
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
+      { alias = "org2", username = "user2", org_type = "production", expiration_date = nil },
     }
     dashboard.open(records, { prompt = "Orgs" })
   ]])

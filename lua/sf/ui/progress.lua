@@ -5,8 +5,8 @@
 --  - "notify": vim.notify, updated in place via a stable `id`
 local Layout = require("sf.ui.layout")
 
-local M = {}
-local H = { handles = {}, timer = nil, next_id = 1 }
+local progress = {}
+local registry = { handles = {}, timer = nil, next_id = 1 }
 
 local DEFAULT_SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 
@@ -32,6 +32,23 @@ local function resolve_backend()
     return "notify"
   end
   return "float"
+end
+
+--- Highlight the trailing "→ alias" / "← alias" segment of a progress
+--- message (if present) with `SfWarn` (a subtle, contrasting yellow by
+--- default) so the target org alias stands out from "Deploy foo.cls done".
+---@param buf number
+---@param ns number
+---@param line string
+---@param lnum number 0-indexed line number
+local function highlight_alias(buf, ns, line, lnum)
+  for _, arrow in ipairs({ "→ ", "← " }) do
+    local _, arrow_end = line:find(arrow, 1, true)
+    if arrow_end then
+      vim.api.nvim_buf_add_highlight(buf, ns, "SfWarn", lnum, arrow_end, -1)
+      return
+    end
+  end
 end
 
 -- Handle -----------------------------------------------------------------
@@ -85,10 +102,10 @@ end
 
 local function float_reflow()
   local idx = 0
-  for _, h in ipairs(H.handles) do
-    if h.backend == "float" and h.win and vim.api.nvim_win_is_valid(h.win) then
-      local geo = h:_float_geometry(idx)
-      vim.api.nvim_win_set_config(h.win, {
+  for _, entry in ipairs(registry.handles) do
+    if entry.backend == "float" and entry.win and vim.api.nvim_win_is_valid(entry.win) then
+      local geo = entry:_float_geometry(idx)
+      vim.api.nvim_win_set_config(entry.win, {
         relative = "editor",
         row = geo.row,
         col = geo.col,
@@ -103,11 +120,11 @@ end
 --- Number of float handles already open, excluding `self`.
 function Handle:_float_stack_index()
   local idx = 0
-  for _, h in ipairs(H.handles) do
-    if h == self then
+  for _, entry in ipairs(registry.handles) do
+    if entry == self then
       break
     end
-    if h.backend == "float" and h.win then
+    if entry.backend == "float" and entry.win then
       idx = idx + 1
     end
   end
@@ -141,11 +158,13 @@ function Handle:_float_render()
     return
   end
 
+  local text = self:_text()
   vim.bo[self.buf].modifiable = true
-  vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, { self:_text() })
+  vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, { text })
   vim.bo[self.buf].modifiable = false
   vim.api.nvim_buf_clear_namespace(self.buf, -1, 0, -1)
   vim.api.nvim_buf_add_highlight(self.buf, -1, self:_hl(), 0, 0, -1)
+  highlight_alias(self.buf, -1, text, 0)
 end
 
 function Handle:_float_close()
@@ -161,6 +180,27 @@ end
 
 -- notify backend
 
+--- Snacks notifier custom render: identical to the built-in "compact"
+--- style (title in the border, message as buffer lines), plus
+--- `highlight_alias` on the message body -- Snacks has no per-substring
+--- highlight hook otherwise, so the default style can't do this alone.
+---@param buf number
+---@param notif table
+---@param ctx table
+local function snacks_alias_style(buf, notif, ctx)
+  local title = vim.trim((notif.icon or "") .. " " .. (notif.title or ""))
+  if title ~= "" then
+    ctx.opts.title = { { " " .. title .. " ", ctx.hl.title } }
+    ctx.opts.title_pos = "center"
+  end
+
+  local lines = vim.split(notif.msg, "\n")
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  for i, line in ipairs(lines) do
+    highlight_alias(buf, ctx.ns, line, i - 1)
+  end
+end
+
 function Handle:_notify_render()
   local level = (not self.done or self.ok) and vim.log.levels.INFO or vim.log.levels.ERROR
 
@@ -171,6 +211,7 @@ function Handle:_notify_render()
       title = "sf",
       level = self.done and (self.ok and "info" or "error") or "info",
       icon = self:_icon(),
+      style = snacks_alias_style,
     })
     return
   end
@@ -192,9 +233,9 @@ function Handle:_render()
 end
 
 local function remove_handle(handle)
-  for i, h in ipairs(H.handles) do
-    if h == handle then
-      table.remove(H.handles, i)
+  for i, entry in ipairs(registry.handles) do
+    if entry == handle then
+      table.remove(registry.handles, i)
       break
     end
   end
@@ -208,33 +249,33 @@ function Handle:_close()
 end
 
 local function stop_timer_if_idle()
-  for _, h in ipairs(H.handles) do
-    if not h.done then
+  for _, entry in ipairs(registry.handles) do
+    if not entry.done then
       return
     end
   end
-  if H.timer then
-    H.timer:stop()
-    H.timer:close()
-    H.timer = nil
+  if registry.timer then
+    registry.timer:stop()
+    registry.timer:close()
+    registry.timer = nil
   end
 end
 
 local function ensure_timer()
-  if H.timer then
+  if registry.timer then
     return
   end
 
   local interval = cfg().interval_ms or 80
-  H.timer = vim.uv.new_timer()
-  H.timer:start(
+  registry.timer = vim.uv.new_timer()
+  registry.timer:start(
     interval,
     interval,
     vim.schedule_wrap(function()
-      for _, h in ipairs(H.handles) do
-        if not h.done then
-          h.frame = h.frame + 1
-          h:_render()
+      for _, entry in ipairs(registry.handles) do
+        if not entry.done then
+          entry.frame = entry.frame + 1
+          entry:_render()
         end
       end
       stop_timer_if_idle()
@@ -281,7 +322,7 @@ end
 --- Start a progress handle for a background task.
 ---@param opts table { msg = string }
 ---@return table handle with :update(msg) and :finish(ok, msg)
-function M.start(opts)
+function progress.start(opts)
   local handle = setmetatable({
     msg = opts.msg or "",
     started = vim.uv.now(),
@@ -289,11 +330,11 @@ function M.start(opts)
     done = false,
     ok = nil,
     backend = resolve_backend(),
-    notify_id = H.next_id,
+    notify_id = registry.next_id,
   }, Handle)
-  H.next_id = H.next_id + 1
+  registry.next_id = registry.next_id + 1
 
-  table.insert(H.handles, handle)
+  table.insert(registry.handles, handle)
 
   if handle.backend == "float" then
     handle:_float_open()
@@ -308,12 +349,12 @@ end
 
 vim.api.nvim_create_autocmd("VimLeavePre", {
   callback = function()
-    if H.timer then
-      H.timer:stop()
-      H.timer:close()
-      H.timer = nil
+    if registry.timer then
+      registry.timer:stop()
+      registry.timer:close()
+      registry.timer = nil
     end
   end,
 })
 
-return M
+return progress

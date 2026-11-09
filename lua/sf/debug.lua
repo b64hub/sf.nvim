@@ -92,7 +92,6 @@ helpers.fetch_line_breakpoint_info = function(cb)
 
       result = helpers.filter_ignored(result)
       helpers.cache = result
-      helpers.write_cache(result)
       cb(result, nil)
     end)
   end)
@@ -161,15 +160,6 @@ helpers.filter_ignored = function(info)
     end
   end
   return filtered
-end
-
---- @param info table[]
-helpers.write_cache = function(info)
-  local dir = util.get_plugin_folder_path() .. "debug/"
-  if vim.fn.isdirectory(dir) == 0 then
-    vim.fn.mkdir(dir, "-p")
-  end
-  vim.fn.writefile({ vim.json.encode(info) }, dir .. "lineBreakpointInfo.json")
 end
 
 --- Resolve the adapter's "apexReplayDebug.js" path (explicit config, else
@@ -277,24 +267,20 @@ end
 --- @param path string absolute path
 helpers.set_last_log = function(path)
   helpers.last_log_path = path
-  local dir = util.get_plugin_folder_path() .. "debug/"
-  if vim.fn.isdirectory(dir) == 0 then
-    vim.fn.mkdir(dir, "-p")
-  end
-  vim.fn.writefile({ path }, dir .. "last_log.txt")
+  util.write_cache_text("debug/last_log.txt", path)
 end
 
 --- Resolve `replay_debugger.log_globs` into absolute glob patterns.
 --- @return string[]
 helpers.log_search_globs = function()
   local root = util.get_sf_root()
-  local plugin_dir = util.get_plugin_folder_path()
+  local cache_dir = util.get_cache_dir()
   local resolved = {}
   for _, pat in ipairs(cfg().log_globs) do
     if pat:sub(1, 1) == "/" then
       table.insert(resolved, pat)
-    elseif pat:sub(1, #"<plugin_folder>/") == "<plugin_folder>/" then
-      table.insert(resolved, plugin_dir .. pat:sub(#"<plugin_folder>/" + 1))
+    elseif pat:sub(1, #"<cache_dir>/") == "<cache_dir>/" then
+      table.insert(resolved, cache_dir .. pat:sub(#"<cache_dir>/" + 1))
     else
       table.insert(resolved, root .. pat)
     end
@@ -385,10 +371,7 @@ end
 Debug.replay_last_log = function()
   local path = helpers.last_log_path
   if not path then
-    local file = util.get_plugin_folder_path() .. "debug/last_log.txt"
-    if util.file_readable(file) then
-      path = vim.fn.readfile(file)[1]
-    end
+    path = util.read_cache_text("debug/last_log.txt")
   end
   if not path or not util.file_readable(path) then
     return util.show_warn("sf.nvim: no previous replay log found")
@@ -761,7 +744,7 @@ Debug.install_adapter = function()
             return util.show_err("sf.nvim: failed to download adapter")
           end
 
-          vim.fn.mkdir(dest_dir, "-p")
+          vim.fn.mkdir(dest_dir, "p")
           vim.system(
             { "unzip", "-oq", tmp_vsix, "-d", dest_dir },
             {},

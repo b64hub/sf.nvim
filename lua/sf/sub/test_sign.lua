@@ -1,6 +1,6 @@
-local U = require("sf.util")
-local M = {}
-local H = {}
+local util = require("sf.util")
+local test_sign = {}
+local helpers = {}
 local enabled = false
 local cache = nil
 
@@ -12,9 +12,9 @@ local uncovered_sign = "sf_uncovered"
 local show_covered = true
 local show_uncovered = true
 
-M.covered_percent = ""
+test_sign.covered_percent = ""
 
-M.setup = function()
+test_sign.setup = function()
   if vim.g.sf.code_sign_highlight.covered.fg == "" then
     show_covered = false
   end
@@ -23,54 +23,54 @@ M.setup = function()
     show_uncovered = false
   end
 
-  H.highlight(covered_group, { fg = vim.g.sf.code_sign_highlight.covered.fg })
-  H.highlight(uncovered_group, { fg = vim.g.sf.code_sign_highlight.uncovered.fg })
+  helpers.highlight(covered_group, { fg = vim.g.sf.code_sign_highlight.covered.fg })
+  helpers.highlight(uncovered_group, { fg = vim.g.sf.code_sign_highlight.uncovered.fg })
 
   vim.fn.sign_define(covered_sign, { text = "▎", texthl = covered_group })
   vim.fn.sign_define(uncovered_sign, { text = "▎", texthl = uncovered_group })
 
-  local in_project, _ = pcall(U.get_sf_root)
+  local in_project, _ = pcall(util.get_sf_root)
   enabled = in_project and (vim.g.sf.auto_display_code_sign or false)
 end
 
-M.toggle = function()
+test_sign.toggle = function()
   if enabled then
     vim.notify("Sign disabled.", vim.log.levels.INFO)
-    H.unplace()
+    helpers.unplace()
   else
     vim.notify("Sign enabled.", vim.log.levels.INFO)
-    M.refresh_and_place()
+    test_sign.refresh_and_place()
   end
 end
 
-M.uncovered_jump_forward = function()
+test_sign.uncovered_jump_forward = function()
   local isForward = true
-  H.uncovered_jump(isForward)
+  helpers.uncovered_jump(isForward)
 end
 
-M.uncovered_jump_backward = function()
+test_sign.uncovered_jump_backward = function()
   local isForward = false
-  H.uncovered_jump(isForward)
+  helpers.uncovered_jump(isForward)
 end
 
-M.is_enabled = function()
+test_sign.is_enabled = function()
   return enabled
 end
 
-M.refresh_and_place = function()
-  H.unplace()
-  local coverage = H.get_coverage()
+test_sign.refresh_and_place = function()
+  helpers.unplace()
+  local coverage = helpers.get_coverage()
   if coverage == nil then
     return
   end
 
-  local signs = H.get_signs_from(coverage)
+  local signs = helpers.get_signs_from(coverage)
   vim.fn.sign_placelist(signs)
   enabled = true
 end
 
-M.refresh_current_file_covered_percent = function()
-  local coverage = H.get_coverage()
+test_sign.refresh_current_file_covered_percent = function()
+  local coverage = helpers.get_coverage()
   if coverage == nil then
     return
   end
@@ -81,37 +81,37 @@ M.refresh_current_file_covered_percent = function()
     local apex_name = v["name"] .. ".cls"
 
     if file_name == apex_name then
-      M.covered_percent = v["coveredPercent"]
+      test_sign.covered_percent = v["coveredPercent"]
       return
     end
   end
-  M.covered_percent = ""
+  test_sign.covered_percent = ""
 end
 
-M.invalidate_cache_and_try_place = function()
+test_sign.invalidate_cache_and_try_place = function()
   cache = nil
-  if M.is_enabled() or vim.g.sf.auto_display_code_sign then
-    M.refresh_and_place()
+  if test_sign.is_enabled() or vim.g.sf.auto_display_code_sign then
+    test_sign.refresh_and_place()
   end
 end
 
 -- helpers
 
-H.get_signs_from = function(coverage)
+helpers.get_signs_from = function(coverage)
   local signs = {}
 
   for i, v in pairs(coverage) do
     local apex_name = v["name"] .. ".cls"
 
     if vim.fn.expand("%:t") == apex_name then
-      M.covered_percent = v["coveredPercent"]
+      test_sign.covered_percent = v["coveredPercent"]
     end
 
-    if U.is_apex_loaded_in_buf(apex_name) then
+    if util.is_apex_loaded_in_buf(apex_name) then
       for line, value in pairs(v["lines"]) do
         local sign = {}
         sign.id = 0
-        sign.buffer = U.get_buf_num(apex_name)
+        sign.buffer = util.get_buf_num(apex_name)
         sign.lnum = line
         sign.priority = 1000
 
@@ -130,7 +130,7 @@ H.get_signs_from = function(coverage)
   return signs
 end
 
-H.get_coverage = function()
+helpers.get_coverage = function()
   local coverage
 
   if cache ~= nil then
@@ -138,7 +138,7 @@ H.get_coverage = function()
     return coverage
   end
 
-  local tbl = U.read_file_in_plugin_folder("test_result.json")
+  local tbl = util.read_file_in_cache_dir("test_result.json")
   if not tbl then
     -- vim.notify_once("Local test_result.json not found.", vim.log.levels.WARN)
     return nil
@@ -155,13 +155,13 @@ H.get_coverage = function()
   return coverage
 end
 
-H.unplace = function()
+helpers.unplace = function()
   vim.fn.sign_unplace(covered_group)
   vim.fn.sign_unplace(uncovered_group)
   enabled = false
 end
 
-H.uncovered_jump = function(isForward)
+helpers.uncovered_jump = function(isForward)
   if not enabled then
     return
   end
@@ -175,10 +175,10 @@ H.uncovered_jump = function(isForward)
 
   local current_lnum = vim.fn.line(".")
 
-  local hunks = H.get_hunks(placed_signs)
+  local hunks = helpers.get_hunks(placed_signs)
 
   if not isForward then
-    hunks = H.revert(hunks)
+    hunks = helpers.revert(hunks)
   end
 
   for _, hunk in ipairs(hunks) do
@@ -193,7 +193,7 @@ H.uncovered_jump = function(isForward)
   vim.fn.sign_jump(hunks[1][1].id, uncovered_group, "") -- loop back
 end
 
-H.get_hunks = function(placed_signs)
+helpers.get_hunks = function(placed_signs)
   local hunks = {}
   local current_hunk = { placed_signs[1] }
 
@@ -211,7 +211,7 @@ H.get_hunks = function(placed_signs)
   return hunks
 end
 
-H.highlight = function(group, color)
+helpers.highlight = function(group, color)
   local style = color.style and "gui=" .. color.style or "gui=NONE"
   local fg = color.fg and "guifg=" .. color.fg or "guifg=NONE"
   local bg = color.bg and "guibg=" .. color.bg or "guibg=NONE"
@@ -223,11 +223,11 @@ H.highlight = function(group, color)
   end
 end
 
-H.revert = function(hunks)
+helpers.revert = function(hunks)
   table.sort(hunks, function(a, b)
     return a[1].lnum > b[1].lnum
   end)
   return hunks
 end
 
-return M
+return test_sign

@@ -4,7 +4,7 @@
 local state = {}
 
 local cache = {
-  org = { alias = "", is_scratch = nil, is_prod = nil, is_sandbox = nil, username = nil },
+  org = { alias = "", org_type = nil, username = nil },
   trace_flags = {}, -- { { id, log_type, debug_level, expires_at_epoch } }
   user_id_cache = {}, -- session.username -> User.Id, avoids a query per refresh
 }
@@ -12,16 +12,14 @@ local cache = {
 --- Update the cached target org and notify listeners if it actually changed:
 --- fires `User SfOrgChanged` and schedules a `redrawstatus`.
 ---@param alias string
----@param meta table|nil { is_scratch, is_prod, is_sandbox, username }
+---@param meta table|nil { org_type, username }
 function state.set_target_org(alias, meta)
   meta = meta or {}
   local changed = cache.org.alias ~= alias
 
   cache.org = {
     alias = alias,
-    is_scratch = meta.is_scratch,
-    is_prod = meta.is_prod,
-    is_sandbox = meta.is_sandbox,
+    org_type = meta.org_type,
     username = meta.username,
   }
 
@@ -37,7 +35,7 @@ function state.set_target_org(alias, meta)
   end
 end
 
---- @return table cached { alias, is_scratch, is_prod, is_sandbox, username }
+--- @return table cached { alias, org_type, username }
 function state.get()
   return cache.org
 end

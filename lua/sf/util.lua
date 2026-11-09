@@ -6,7 +6,7 @@ util.target_org = ""
 --- Set the target org: updates `util.target_org` (so existing readers keep
 --- working) and the cached statusline state in `sf.state`.
 ---@param alias string
----@param meta table|nil { is_scratch, is_prod, is_sandbox, username }
+---@param meta table|nil { org_type, username }
 util.set_target_org = function(alias, meta)
   util.target_org = alias
   require("sf.state").set_target_org(alias, meta)
@@ -84,19 +84,50 @@ util.get_default_dir_path = function()
   return util.normalize_path(dir_path, true)
 end
 
-util.get_plugin_folder_path = function()
-  local folder_path = util.combine_path(util.get_sf_root(), vim.g.sf.plugin_folder_name)
-  return util.normalize_path(folder_path, true)
+--- Absolute, trailing-slash path to this project's cache directory
+--- (`vim.g.sf.cache_dir`, project-local -- resolved under `get_sf_root()`,
+--- same as `.sf/`/`.sfdx/`). Holds every file this plugin generates:
+--- disposable caches (org list, dashboard snapshots) alongside a few
+--- non-cache working files (retrieve-diff scratch space, downloaded
+--- metadata listings) -- one folder, one config knob, see AGENTS.md/the
+--- cache architecture notes for why this isn't split into two.
+---@return string
+util.get_cache_dir = function()
+  local dir_path = util.combine_path(util.get_sf_root(), vim.g.sf.cache_dir)
+  return util.normalize_path(dir_path, true)
 end
 
-util.create_plugin_folder_if_not_exist = function()
-  local cache_folder = util.get_plugin_folder_path()
-  if vim.fn.isdirectory(cache_folder) == 0 then
-    local ok, result = pcall(vim.fn.mkdir, cache_folder, "-p")
+util.create_cache_dir_if_not_exist = function()
+  local cache_dir = util.get_cache_dir()
+  if vim.fn.isdirectory(cache_dir) == 0 then
+    local ok, result = pcall(vim.fn.mkdir, cache_dir, "p")
     if not ok then
       util.show_err("cache folder creation failed!")
       util.show_err("error: " .. result)
     end
+  end
+end
+
+--- One-time, per-session notice if the pre-rename cache folder
+--- (`sf_cache/`) is still sitting in the project root and `cache_dir` is
+--- still at its new default -- it's never read anymore (deliberately: see
+--- the cache architecture notes), so this just points at it once instead
+--- of leaving a silently orphaned directory with no explanation. No-op
+--- (silently) outside an sf project, or when the user has already
+--- customized `cache_dir` away from the new default.
+util.warn_if_legacy_cache_dir_exists = function()
+  if vim.g.sf.cache_dir ~= "/.nvim/sf/" then
+    return
+  end
+  local ok, root = pcall(util.get_sf_root)
+  if not ok then
+    return
+  end
+  if vim.fn.isdirectory(root .. "sf_cache/") == 1 then
+    vim.notify_once(
+      "sf.nvim: cache folder moved to '.nvim/sf/'; the old 'sf_cache/' directory is no longer used and can be deleted.",
+      vim.log.levels.WARN
+    )
   end
 end
 
@@ -296,7 +327,45 @@ util.is_installed = function(plugin_name)
   return pcall(require, plugin_name)
 end
 
---- Silently read and JSON-decode `<plugin folder>/<file_name>`, returning
+--- Resolve `<cache dir>/<file_name>` to an absolute path, creating its
+--- parent directory (which may be nested, e.g. "orgs/myalias.json") if
+--- needed. Returns nil (not in an sf project) instead of erroring.
+---@param file_name string
+---@return string|nil
+local function resolve_cache_path(file_name)
+  local ok, cache_dir = pcall(util.get_cache_dir)
+  if not ok then
+    return nil
+  end
+  local path = cache_dir .. file_name
+  local dir = vim.fs.dirname(path)
+  if vim.fn.isdirectory(dir) == 0 then
+    pcall(vim.fn.mkdir, dir, "p")
+  end
+  return path
+end
+
+--- Best-effort atomic write: write to a temp file in the same directory,
+--- then rename over `path` -- `vim.uv.fs_rename` is atomic within one
+--- filesystem, so a reader (or a crash/kill mid-write) only ever sees the
+--- complete old file or the complete new one, never a truncated one.
+--- Silent on failure, same contract as every cache write: a cache is only
+--- ever a snapshot for next time, never the sole copy of anything.
+---@param path string absolute path
+---@param lines string[]
+local function atomic_write(path, lines)
+  local tmp = path .. ".tmp"
+  local ok_write = pcall(vim.fn.writefile, lines, tmp)
+  if not ok_write then
+    return
+  end
+  local ok_rename = pcall(vim.uv.fs_rename, tmp, path)
+  if not ok_rename then
+    pcall(vim.fn.delete, tmp)
+  end
+end
+
+--- Silently read and JSON-decode `<cache dir>/<file_name>`, returning
 --- nil on any failure (not in an sf project, file missing, unreadable,
 --- malformed JSON) -- unlike read_file_json_to_tbl, this never notifies:
 --- a cache miss is the normal, expected first-run state for a cache, not
@@ -304,11 +373,11 @@ end
 ---@param file_name string
 ---@return table|nil
 util.read_cache_json = function(file_name)
-  local ok_path, folder_path = pcall(util.get_plugin_folder_path)
+  local ok_path, cache_dir = pcall(util.get_cache_dir)
   if not ok_path then
     return nil
   end
-  local ok_read, lines = pcall(vim.fn.readfile, folder_path .. file_name)
+  local ok_read, lines = pcall(vim.fn.readfile, cache_dir .. file_name)
   if not ok_read then
     return nil
   end
@@ -319,27 +388,65 @@ util.read_cache_json = function(file_name)
   return decoded
 end
 
---- Silently JSON-encode and write `tbl` to `<plugin folder>/<file_name>`,
---- creating the plugin folder if needed. Best-effort: a write failure is
---- swallowed, since every caller already has a working in-memory result
---- and this is only a cache for next time.
+--- Silently JSON-encode and atomically write `tbl` to
+--- `<cache dir>/<file_name>`, creating any parent directories needed.
+--- Best-effort: a write failure is swallowed, since every caller already
+--- has a working in-memory result and this is only a cache for next time.
 ---@param file_name string
 ---@param tbl table
 util.write_cache_json = function(file_name, tbl)
-  local ok_path, folder_path = pcall(util.get_plugin_folder_path)
+  local path = resolve_cache_path(file_name)
+  if not path then
+    return
+  end
+  atomic_write(path, { vim.json.encode(tbl) })
+end
+
+--- Plain-text equivalent of `read_cache_json`/`write_cache_json`, for the
+--- one cache file that isn't JSON (the replay debugger's `last_log.txt`).
+--- Same silent-nil-on-miss / best-effort-write contract.
+---@param file_name string
+---@return string|nil
+util.read_cache_text = function(file_name)
+  local ok_path, cache_dir = pcall(util.get_cache_dir)
+  if not ok_path then
+    return nil
+  end
+  local ok_read, lines = pcall(vim.fn.readfile, cache_dir .. file_name)
+  if not ok_read or #lines == 0 then
+    return nil
+  end
+  return lines[1]
+end
+
+---@param file_name string
+---@param text string
+util.write_cache_text = function(file_name, text)
+  local path = resolve_cache_path(file_name)
+  if not path then
+    return
+  end
+  atomic_write(path, { text })
+end
+
+--- Delete `<cache dir>/<file_name>`, if present. Silent no-op otherwise
+--- (not in an sf project, or nothing to delete) -- same best-effort
+--- contract as the rest of this cache API.
+---@param file_name string
+util.delete_cache_file = function(file_name)
+  local ok_path, cache_dir = pcall(util.get_cache_dir)
   if not ok_path then
     return
   end
-  util.create_plugin_folder_if_not_exist()
-  pcall(vim.fn.writefile, { vim.json.encode(tbl) }, folder_path .. file_name)
+  pcall(vim.fn.delete, cache_dir .. file_name)
 end
 
 ---@param name string
 ---@return table|nil
-util.read_file_in_plugin_folder = function(name)
-  util.create_plugin_folder_if_not_exist()
+util.read_file_in_cache_dir = function(name)
+  util.create_cache_dir_if_not_exist()
 
-  local path = util.get_plugin_folder_path()
+  local path = util.get_cache_dir()
   return util.read_file_json_to_tbl(name, path)
 end
 

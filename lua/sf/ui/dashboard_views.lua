@@ -8,6 +8,7 @@ local org_status = require("sf.sub.org_status")
 local rest_api = require("sf.sub.rest_api")
 local Org = require("sf.org")
 local Debug = require("sf.debug")
+local org_model = require("sf.org_model")
 
 --- Format one log record the same way whether it's being rendered or
 --- filtered, so a filter query can never drift from what's actually shown.
@@ -408,9 +409,12 @@ local function flatten_package_row(raw_record)
   local namespace = as_string_field(subscriber_package.NamespacePrefix) or "unmanaged"
   local major = as_number_field(package_version.MajorVersion)
   local minor = as_number_field(package_version.MinorVersion)
+  local patch = as_number_field(package_version.PatchVersion)
 
   local version
-  if major ~= nil and minor ~= nil then
+  if major ~= nil and minor ~= nil and patch ~= nil then
+    version = string.format("%d.%d.%d", major, minor, patch)
+  elseif major ~= nil and minor ~= nil then
     version = string.format("%d.%d", major, minor)
   else
     version = "unknown"
@@ -498,7 +502,8 @@ local views = {
   {
     id = "set_local_default",
     key = "L",
-    label = "Set Local Default",
+    label = "Local",
+    help = "Set local target org",
     -- Org-scoped action: shown in the left (org list) pane's footer.
     pane = "left",
     fetch = nil,
@@ -511,7 +516,8 @@ local views = {
   {
     id = "set_global_default",
     key = "G",
-    label = "Set Global Default",
+    label = "Global",
+    help = "Set global target org",
     -- Org-scoped action: shown in the left (org list) pane's footer.
     pane = "left",
     fetch = nil,
@@ -526,12 +532,36 @@ local views = {
     id = "open_org",
     key = "o",
     label = "Open",
+    help = "Open org in browser",
     -- Org-scoped action: shown in the left (org list) pane's footer.
     pane = "left",
     fetch = nil,
     render = nil,
     action = function(record, _)
       Org.open_org(record.alias)
+    end,
+  },
+  {
+    id = "refresh_sandbox",
+    key = "R",
+    label = "Refresh",
+    help = "Refresh sandbox from its default Dev Hub (sandboxes only)",
+    -- Org-scoped action: shown in the left (org list) pane's footer.
+    pane = "left",
+    fetch = nil,
+    render = nil,
+    action = function(record, dashboard_api)
+      if not org_model.can_refresh(record) then
+        return util.show_err("Only sandboxes can be refreshed.")
+      end
+
+      local prompt = string.format("Refresh sandbox '%s' from its default Dev Hub? (y/N): ", record.alias)
+      vim.ui.input({ prompt = prompt }, function(input)
+        if input ~= "y" and input ~= "Y" then
+          return
+        end
+        Org.refresh_sandbox(record, dashboard_api.repaint_list)
+      end)
     end,
   },
   {
@@ -580,7 +610,8 @@ local views = {
   {
     id = "enable_logging",
     key = "e",
-    label = "Enable Logging",
+    label = "Debug",
+    help = "Enable replay logging",
     -- View-scoped action (not org-identity related): shown in the right
     -- (detail view) pane's footer alongside refresh/filter/close.
     pane = "right",
@@ -696,7 +727,7 @@ local views = {
           return callback(nil, err)
         end
         local soql =
-          "SELECT SubscriberPackage.Name, SubscriberPackage.NamespacePrefix, SubscriberPackageVersion.MajorVersion, SubscriberPackageVersion.MinorVersion FROM InstalledSubscriberPackage"
+          "SELECT SubscriberPackage.Name, SubscriberPackage.NamespacePrefix, SubscriberPackageVersion.MajorVersion, SubscriberPackageVersion.MinorVersion, SubscriberPackageVersion.PatchVersion FROM InstalledSubscriberPackage"
         rest_api.query(session, soql, function(records, query_err)
           if not records then
             return callback(nil, query_err)
@@ -721,9 +752,17 @@ local views = {
         highlight = "SfTableHeader",
       })
 
-      -- Build data rows
+      -- Build data rows, alphabetically by package name (case-insensitive)
+      -- so the list doesn't just reflect whatever order the org's Tooling
+      -- API query happened to return.
+      local flattened_rows = {}
       for _, raw_record in ipairs(data) do
-        local flattened = flatten_package_row(raw_record)
+        table.insert(flattened_rows, flatten_package_row(raw_record))
+      end
+      table.sort(flattened_rows, function(left, right)
+        return left.name:lower() < right.name:lower()
+      end)
+      for _, flattened in ipairs(flattened_rows) do
         table.insert(col_rows, {
           cells = { flattened.name, flattened.namespace, flattened.version },
           highlight = nil,
@@ -800,7 +839,11 @@ function views.render_winbar(active_view_id)
   -- Plain space between segments (not colored, not a glyph) -- the
   -- highlight change between an SfTitle and SfFooter segment is what
   -- reads as a tab boundary; add a left-anchor truncation marker at the end.
-  return table.concat(segments, " ") .. "%<"
+  -- Reset to the plain winbar highlight after the last segment -- a %#Group#
+  -- otherwise stays in effect through the rest of the line's fill, so an
+  -- active (SfTitle) rightmost tab would paint the whole empty remainder of
+  -- the winbar instead of just its own label.
+  return table.concat(segments, " ") .. "%#SfNormal#%<"
 end
 
 -- Export filter_logs, format_limits, and flatten_package_row for testing
