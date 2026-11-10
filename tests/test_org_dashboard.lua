@@ -315,7 +315,7 @@ test_set["action entry: spy function is called with record"] = function()
   child.lua([[vim.wait(60, function() return false end, 50)]])
 
   -- Move to second org
-  child.lua([[vim.api.nvim_input("j")]])
+  child.lua([[vim.api.nvim_input("<Down>")]])
   child.lua([[vim.wait(60, function() return false end, 50)]])
 
   -- Press 'x' to trigger the action
@@ -441,7 +441,7 @@ test_set["action entry: dashboard_api.repaint_list invoked after action"] = func
   child.lua([[vim.wait(60, function() return false end, 50)]])
 
   -- Move to second org
-  child.lua([[vim.api.nvim_input("j")]])
+  child.lua([[vim.api.nvim_input("<Down>")]])
   child.lua([[vim.wait(60, function() return false end, 50)]])
 
   -- Press 't' to toggle default (org2 becomes default, org1 is not)
@@ -574,6 +574,60 @@ test_set["handle_tab_click: switches view and returns focus to list"] = function
   eq(child.lua_get([[_G.first_line_is_content]]), true)
 end
 
+test_set["g1-g9: jump directly to the tab with that [N] number"] = function()
+  child.lua([[
+    records = {
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  -- Pick whichever non-first tab the real registry happens to have (at
+  -- least "details" + one more is guaranteed by the registry's own tests).
+  child.lua([[
+    local tabs = require("sf.ui.dashboard_views").tab_views()
+    GLOBAL_target_idx = math.min(3, #tabs)
+  ]])
+
+  child.lua([[vim.api.nvim_input("g" .. GLOBAL_target_idx)]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  -- The winbar segment for that index should now carry the active (SfTitle)
+  -- highlight immediately before its "[N] " marker.
+  local is_active = child.lua([[
+    local winbar
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.wo[win].winbar and vim.wo[win].winbar ~= "" then
+        winbar = vim.wo[win].winbar
+      end
+    end
+    local marker = string.format("%%#SfTitle# [%d] ", GLOBAL_target_idx)
+    return winbar:find(marker, 1, true) ~= nil
+  ]])
+
+  eq(is_active, true)
+
+  -- Works the same from the view pane too (after <Tab>).
+  child.lua([[vim.api.nvim_input("<Tab>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  child.lua([[vim.api.nvim_input("g1")]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  local back_to_first = child.lua([[
+    local winbar
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.wo[win].winbar and vim.wo[win].winbar ~= "" then
+        winbar = vim.wo[win].winbar
+      end
+    end
+    return winbar:find("%#SfTitle# [1] ", 1, true) ~= nil
+  ]])
+
+  eq(back_to_first, true)
+end
+
 test_set["footer: shows action-only views, not tabs; includes f, r, q"] = function()
   child.lua([[
     records = {
@@ -615,6 +669,80 @@ test_set["footer: shows action-only views, not tabs; includes f, r, q"] = functi
   eq(footer_text:find("q") ~= nil, true)
   -- Footer should NOT contain tab labels (Details, Logs, etc. are in the strip, not footer)
   eq(footer_text:find("Details") == nil, true)
+end
+
+test_set["footer: '? help'/'q close' only on the right (view) pane footer, right-aligned"] = function()
+  child.lua([[
+    -- Needs a wide-enough terminal for the right pane to have slack to
+    -- pad into -- the default 80-col test terminal leaves the right
+    -- pane's footer exactly as wide as its content.
+    COLUMNS_BEFORE = vim.o.columns
+    vim.o.columns = 200
+    records = {
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  local footers = child.lua([[
+    local list_footer, view_footer = nil, nil
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      local config = vim.api.nvim_win_get_config(win)
+      if config.footer then
+        if vim.wo[win].winbar ~= "" then
+          view_footer = config.footer[1][1]
+        else
+          list_footer = config.footer[1][1]
+        end
+      end
+    end
+    return { list_footer, view_footer }
+  ]])
+
+  -- Left (list) pane footer never mentions the global keys -- they're
+  -- only advertised once, on the right pane.
+  eq(footers[1]:find("help") == nil, true)
+  eq(footers[1]:find("close") == nil, true)
+
+  -- Right (view) pane footer has both, with "q close" ending flush
+  -- against the right edge and preceded by real padding (not just the
+  -- single separator space a left-aligned list would have).
+  eq(footers[2]:find("help") ~= nil, true)
+  eq(footers[2]:find("q close") ~= nil, true)
+  eq(footers[2]:match("q close %s*$") ~= nil, true)
+  eq(footers[2]:match("%s%s+%? help") ~= nil, true)
+
+  child.lua([[vim.o.columns = COLUMNS_BEFORE]])
+end
+
+test_set["'q' closes the dashboard from the view pane too"] = function()
+  child.lua([[
+    records = {
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+    windows_before_close = #vim.api.nvim_list_wins()
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("<Tab>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  child.lua([[vim.api.nvim_input("q")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  local dashboard_wins_left = child.lua([[
+    local count = 0
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_is_valid(win) and vim.bo[vim.api.nvim_win_get_buf(win)].filetype == "SfOrgDashboard" then
+        count = count + 1
+      end
+    end
+    return count
+  ]])
+
+  eq(dashboard_wins_left, 0)
 end
 
 test_set["refresh key 'r': invalidates org_display cache"] = function()
@@ -817,7 +945,7 @@ test_set["prefetch: cache hit prevents re-fetch on tab switch"] = function()
   eq(count_after, 1)
 end
 
-test_set["arrow keys: <Up>/<Down> scroll view window, not org list"] = function()
+test_set["arrow keys: <Up>/<Down> navigate whichever pane is focused"] = function()
   child.lua([[
     -- Create a view that returns more lines than the pane height
     local tall_view = {
@@ -851,7 +979,8 @@ test_set["arrow keys: <Up>/<Down> scroll view window, not org list"] = function(
     end
     
     records = {
-      { alias = "tall_test_org", username = "user1", org_type = "production", expiration_date = nil },
+      { alias = "tall_test_org_a", username = "user1", org_type = "production", expiration_date = nil },
+      { alias = "tall_test_org_b", username = "user2", org_type = "production", expiration_date = nil },
     }
     
     dashboard.open(records, { prompt = "Orgs" })
@@ -879,21 +1008,100 @@ test_set["arrow keys: <Up>/<Down> scroll view window, not org list"] = function(
     end
   ]])
   
-  -- Get initial view window cursor position
   local view_cursor_before = child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_view_window)[1] ]])
   local list_cursor_before = child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_list_window)[1] ]])
-  
-  -- Press <Down> to scroll view pane
+
+  -- Focus is the list window by default: <Down> should move the list
+  -- cursor (to org 2), and must NOT touch the view pane's cursor.
   child.lua([[vim.api.nvim_input("<Down>")]])
   child.lua([[vim.wait(60, function() return false end, 50)]])
-  
-  local view_cursor_after = child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_view_window)[1] ]])
-  local list_cursor_after = child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_list_window)[1] ]])
-  
-  -- View window cursor should have moved down
-  eq(view_cursor_after, view_cursor_before + 1)
-  -- List window cursor should NOT have changed
-  eq(list_cursor_after, list_cursor_before)
+
+  eq(child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_list_window)[1] ]]), list_cursor_before + 1)
+  eq(child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_view_window)[1] ]]), view_cursor_before)
+
+  -- <Tab> moves focus into the view pane: <Down> there should move the
+  -- view cursor, and must NOT touch the list pane's cursor.
+  child.lua([[vim.api.nvim_input("<Tab>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  eq(child.lua([[return vim.api.nvim_get_current_win() == GLOBAL_view_window]]), true)
+
+  child.lua([[vim.api.nvim_input("<Down>")]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  eq(child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_view_window)[1] ]]), view_cursor_before + 1)
+  eq(child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_list_window)[1] ]]), list_cursor_before + 1)
+end
+
+test_set["'j'/'k' navigate whichever pane is focused, not hardcoded to the list"] = function()
+  child.lua([[
+    local tall_view = {
+      id = "tall_view_jk",
+      key = "t",
+      label = "TallViewJK",
+      fetch = function(record, callback)
+        vim.schedule(function()
+          callback({ tall = true }, nil)
+        end)
+      end,
+      render = function(record, data)
+        local lines = {}
+        for i = 1, 30 do
+          table.insert(lines, "line " .. tostring(i))
+        end
+        local line_hls = {}
+        for _ = 1, #lines do
+          table.insert(line_hls, {})
+        end
+        return lines, line_hls
+      end,
+    }
+    table.insert(dashboard_views, tall_view)
+
+    records = {
+      { alias = "org_a", username = "user1", org_type = "production", expiration_date = nil },
+      { alias = "org_b", username = "user2", org_type = "production", expiration_date = nil },
+    }
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("t")]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  child.lua([[
+    GLOBAL_view_window, GLOBAL_list_window = nil, nil
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.bo[vim.api.nvim_win_get_buf(win)].filetype == "SfOrgDashboard" then
+        if vim.wo[win].winbar ~= "" then
+          GLOBAL_view_window = win
+        else
+          GLOBAL_list_window = win
+        end
+      end
+    end
+  ]])
+
+  local list_cursor_before = child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_list_window)[1] ]])
+  local view_cursor_before = child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_view_window)[1] ]])
+
+  -- Focus is the list pane by default: 'j' moves the list cursor, not the view's.
+  child.lua([[vim.api.nvim_input("j")]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  eq(child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_list_window)[1] ]]), list_cursor_before + 1)
+  eq(child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_view_window)[1] ]]), view_cursor_before)
+
+  -- <Tab> into the view pane: 'j'/'k' now move the view cursor instead.
+  child.lua([[vim.api.nvim_input("<Tab>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  child.lua([[vim.api.nvim_input("j")]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+  eq(child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_view_window)[1] ]]), view_cursor_before + 1)
+
+  child.lua([[vim.api.nvim_input("k")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+  eq(child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_view_window)[1] ]]), view_cursor_before)
+  -- List cursor untouched by any of the view-pane 'j'/'k' presses.
+  eq(child.lua([[return vim.api.nvim_win_get_cursor(GLOBAL_list_window)[1] ]]), list_cursor_before + 1)
 end
 
 test_set["arrow keys: <C-d>/<C-u> still scroll half-page"] = function()
@@ -969,7 +1177,7 @@ test_set["arrow keys: <C-d>/<C-u> still scroll half-page"] = function()
   eq(topline_after > topline_before, true)
 end
 
-test_set["arrow keys: j/k still control org selection, not view scroll"] = function()
+test_set["arrow keys: <Down> controls org selection, not view scroll"] = function()
   child.lua([[
     local basic_view = {
       id = "basic_view_j_k",
@@ -1026,8 +1234,8 @@ test_set["arrow keys: j/k still control org selection, not view scroll"] = funct
   
   eq(content_first:find("org_a") ~= nil, true)
   
-  -- Press 'j' to move to next org
-  child.lua([[vim.api.nvim_input("j")]])
+  -- Press <Down> to move to next org
+  child.lua([[vim.api.nvim_input("<Down>")]])
   child.lua([[vim.wait(60, function() return false end, 50)]])
   
   -- Get content for second org
@@ -1237,9 +1445,11 @@ test_set["CR on logs tab: downloads scoped to that org's alias, opens the log, a
   -- Switch to the logs tab.
   child.lua([[vim.api.nvim_input("l")]])
   child.lua([[vim.wait(60, function() return false end, 50)]])
-  -- Move the view pane's cursor onto the (only) log row, without ever
-  -- leaving the list window -- this is the path that used to silently do
-  -- nothing because <CR> was only bound on the view buffer.
+  -- <Tab> into the view pane, then move its cursor onto the (only) log
+  -- row before <CR> -- <CR>/D are bound on both buffers, but navigating
+  -- the log table itself now requires focus to actually be there.
+  child.lua([[vim.api.nvim_input("<Tab>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
   child.lua([[vim.api.nvim_input("<Down>")]])
   child.lua([[vim.wait(30, function() return false end, 30)]])
   child.lua([[vim.api.nvim_input("<CR>")]])
@@ -1334,6 +1544,8 @@ test_set["D on logs tab: downloads without opening or closing the dashboard, so 
   child.lua([[vim.wait(60, function() return false end, 50)]])
   child.lua([[vim.api.nvim_input("l")]])
   child.lua([[vim.wait(60, function() return false end, 50)]])
+  child.lua([[vim.api.nvim_input("<Tab>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
   child.lua([[vim.api.nvim_input("<Down>")]])
   child.lua([[vim.wait(30, function() return false end, 30)]])
 

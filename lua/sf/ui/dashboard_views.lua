@@ -805,16 +805,18 @@ end
 
 --- Render a tab strip from the list of tab views.
 --- Render a winbar string for the view pane with clickable tabs.
---- Each tab is a clickable segment built from views.tab_views(). No key
---- prefix or separator glyph: the active/inactive highlight change on each
---- segment's own background is the boundary between tabs (the same
---- pill/segment look powerline-style statuslines get from adjacent
---- highlight groups, no separator character needed) -- this is 'statusline'
---- syntax (see :h statusline), which winbar reuses; %#Group# is its only
---- native coloring primitive and %N@Handler@...%X its only native click
---- primitive. There is no native tab-separator or prev/next-navigation
---- item, so cycling (h/l, arrows) and direct-key jumps stay real Lua
---- keymaps, not winbar features.
+--- Each tab is a clickable segment built from views.tab_views(), labeled
+--- with its 1-based bracketed index (e.g. "[1] Details") so it doubles as
+--- the direct-jump number org_dashboard.lua's digit keymaps (1-9) use --
+--- the active/inactive highlight change on each segment's own background
+--- is the boundary between tabs (the same pill/segment look
+--- powerline-style statuslines get from adjacent highlight groups, no
+--- separator character needed) -- this is 'statusline' syntax (see :h
+--- statusline), which winbar reuses; %#Group# is its only native coloring
+--- primitive and %N@Handler@...%X its only native click primitive. There
+--- is no native tab-separator or prev/next-navigation item, so cycling
+--- (h/l, arrows) and direct-key jumps stay real Lua keymaps, not winbar
+--- features.
 ---@param active_view_id string the id of the currently active view
 ---@return string winbar string with clickable regions and highlights
 function views.render_winbar(active_view_id)
@@ -828,9 +830,10 @@ function views.render_winbar(active_view_id)
     local is_active = view_desc.id == active_view_id
     local highlight = is_active and "%#SfTitle#" or "%#SfFooter#"
     local segment = string.format(
-      "%%%d@v:lua.require'sf.ui.org_dashboard'.handle_tab_click@%s %s %%X",
+      "%%%d@v:lua.require'sf.ui.org_dashboard'.handle_tab_click@%s [%d] %s %%X",
       tab_idx,
       highlight,
+      tab_idx,
       view_desc.label
     )
     table.insert(segments, segment)
