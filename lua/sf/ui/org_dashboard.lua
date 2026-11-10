@@ -125,20 +125,40 @@ function dashboard.open(records, opts)
     filtered_logs = {}, -- keeps track of log ids in rendered order for download mapping
   }
 
+  local geometry_pair = Layout.float_geometry_pair({
+    position = "center",
+    width = 0.9,
+    height = 0.8,
+    left_ratio = 0.3,
+  })
+
+  -- Right-align `right_parts` against `width`, left-aligning `left_parts`
+  -- before it -- used to visually separate pane-scoped action keys (left)
+  -- from dashboard-global keys like "? help"/"q close" (right), which
+  -- work the same regardless of which pane is focused.
+  local right_align_footer = function(left_parts, right_parts, width)
+    local left_str = " " .. table.concat(left_parts, " · ")
+    local right_str = table.concat(right_parts, " · ") .. " "
+    local gap = math.max(width - #left_str - #right_str, 1)
+    return left_str .. string.rep(" ", gap) .. right_str
+  end
+
   -- Left pane (org list) footer: org-identity actions -- which org this is
-  -- and what to do with it (set as target, open in browser).
+  -- and what to do with it (set as target, open in browser). "? help"/
+  -- "q close" are global keys that work from either pane -- only the
+  -- right pane's footer advertises them, so they're not listed twice.
   local footer_for_list = function()
     local parts = {}
     for _, view_desc in ipairs(dashboard_views.action_views("left")) do
       table.insert(parts, view_desc.key .. " " .. view_desc.label)
     end
     table.insert(parts, "D delete")
-    table.insert(parts, "? help")
     return " " .. table.concat(parts, " · ") .. " "
   end
 
-  -- Right pane (detail view) footer: misc/view-scoped actions plus
-  -- dashboard-level keys that have no descriptor.
+  -- Right pane (detail view) footer: view-scoped actions left-aligned,
+  -- global dashboard keys ("? help", "q close") right-shifted so they
+  -- read as dashboard-wide rather than specific to this pane's content.
   local footer_for_view = function()
     local parts = {}
     for _, view_desc in ipairs(dashboard_views.action_views("right")) do
@@ -150,17 +170,8 @@ function dashboard.open(records, opts)
     end
     table.insert(parts, "f filter")
     table.insert(parts, "r refresh")
-    table.insert(parts, "? help")
-    table.insert(parts, "q close")
-    return " " .. table.concat(parts, " · ") .. " "
+    return right_align_footer(parts, { "? help", "q close" }, geometry_pair.right.width)
   end
-
-  local geometry_pair = Layout.float_geometry_pair({
-    position = "center",
-    width = 0.9,
-    height = 0.8,
-    left_ratio = 0.3,
-  })
 
   local list_win_opts = {
     relative = "editor",
@@ -241,10 +252,9 @@ function dashboard.open(records, opts)
   end
 
   vim.wo[list_window].cursorline = true
-  -- Normally off (the view pane is a read-only display, not navigated) --
-  -- but the logs view is an exception: a user moves focus here to place
-  -- the cursor on a specific log line before pressing <CR> to download it,
-  -- so a visible cursorline is needed to see which line that is.
+  -- The view pane is a real navigable window now (<Tab> moves focus into
+  -- it), so a visible cursorline is needed everywhere, not just the logs
+  -- view -- it's also how a user sees which log line <CR>/D would act on.
   vim.wo[view_window].cursorline = true
 
   vim.api.nvim_win_set_option(
@@ -592,8 +602,27 @@ function dashboard.open(records, opts)
     callback = on_cursor_move,
   })
 
-  vim.keymap.set("n", "q", close, { buffer = session.list_buffer, nowait = true })
-  vim.keymap.set("n", "<Esc>", close, { buffer = session.list_buffer, nowait = true })
+  -- Global, works from either pane (the view footer is where it's
+  -- advertised, since the list footer only shows pane-scoped keys).
+  for _, buffer in ipairs({ session.list_buffer, session.view_buffer }) do
+    vim.keymap.set("n", "q", close, { buffer = buffer, nowait = true })
+    vim.keymap.set("n", "<Esc>", close, { buffer = buffer, nowait = true })
+  end
+
+  -- <Tab> swaps real window focus between the list and view panes. Once
+  -- focus is actually on the target window, j/k and arrow keys move
+  -- within it via Neovim's own built-in cursor motion -- no remote
+  -- nvim_win_call, and no hardcoding to the list pane, needed.
+  local toggle_pane_focus = function()
+    local current_win = vim.api.nvim_get_current_win()
+    local target = current_win == session.list_window and session.view_window or session.list_window
+    if vim.api.nvim_win_is_valid(target) then
+      vim.api.nvim_set_current_win(target)
+    end
+  end
+
+  vim.keymap.set("n", "<Tab>", toggle_pane_focus, { buffer = session.list_buffer, nowait = true })
+  vim.keymap.set("n", "<Tab>", toggle_pane_focus, { buffer = session.view_buffer, nowait = true })
 
   -- "?" help overlay: the footers only have room for short labels (that
   -- was the whole point of shortening them), so this is where the full
@@ -621,6 +650,8 @@ function dashboard.open(records, opts)
       add(view_desc.key, view_desc.label)
     end
     add("<Left>/<Right>, h/l", "Cycle tabs")
+    add("g1-g9", "Jump to tab by its [N] number")
+    add("<Tab>", "Switch focus between list and view pane")
     table.insert(lines, "")
 
     table.insert(lines, "Org actions")
@@ -637,7 +668,7 @@ function dashboard.open(records, opts)
     add("f", "Filter (logs view)")
     add("r", "Refresh org list")
     add("<C-d>/<C-u>", "Scroll view half page")
-    add("<Up>/<Down>", "Scroll view one line")
+    add("<Up>/<Down>, j/k", "Move within the focused pane")
     table.insert(lines, "")
 
     table.insert(lines, "Logs tab")
@@ -769,6 +800,24 @@ function dashboard.open(records, opts)
     cycle_tab(-1)
   end, { buffer = session.list_buffer, nowait = true })
 
+  -- Direct-jump to a tab by its bracketed winbar number ("[1] Details" ->
+  -- g1). Bare digit keys can't be mapped on their own in Normal mode --
+  -- Neovim always swallows 1-9 into a pending count prefix instead of
+  -- firing a mapping -- so this mirrors Vim's own count-prefixed tab
+  -- switching ("2gt") with a g-prefix instead. Bound on both panes, like
+  -- the click handler, so it works regardless of which pane has focus.
+  for tab_number = 1, 9 do
+    local jump_to_tab = function()
+      local tabs = dashboard_views.tab_views()
+      local tab_view = tabs[tab_number]
+      if tab_view then
+        tab_switch_body(tab_view.id)
+      end
+    end
+    vim.keymap.set("n", "g" .. tab_number, jump_to_tab, { buffer = session.list_buffer, nowait = true })
+    vim.keymap.set("n", "g" .. tab_number, jump_to_tab, { buffer = session.view_buffer, nowait = true })
+  end
+
   -- Factor scroll logic into a helper for reuse with <C-d>/<C-u> and arrow keys
   local scroll_view_pane = function(normal_keys)
     if vim.api.nvim_win_is_valid(session.view_window) then
@@ -787,24 +836,15 @@ function dashboard.open(records, opts)
     scroll_view_pane("\21")
   end, { buffer = session.list_buffer, nowait = true })
 
-  -- Arrow keys navigate the view pane (not the org list)
-  -- <Up>/<Down> move cursor one line in the view window
-  vim.keymap.set("n", "<Down>", function()
-    scroll_view_pane("j")
-  end, { buffer = session.list_buffer, nowait = true })
-
-  vim.keymap.set("n", "<Up>", function()
-    scroll_view_pane("k")
-  end, { buffer = session.list_buffer, nowait = true })
-
   -- Download the log under the cursor in the view pane's logs table.
   -- The cursor read is always `session.view_window`'s (that's what indexes
   -- into `session.filtered_logs`, not `records`), but the keymap itself is
-  -- bound on BOTH buffers: the shared <Up>/<Down> handlers above already
-  -- move the view pane's cursor without switching window focus away from
-  -- the list, so a user picks a log with plain <Down>/<Up> and hits <CR>
-  -- without ever needing <C-w>w - view-buffer-only left that common path
-  -- silently doing nothing.
+  -- bound on BOTH buffers: a user presses <Tab> to move focus into the
+  -- view pane, picks a log with plain <Down>/<Up>, and hits <CR> -- no
+  -- <C-w>w needed, and binding only the view buffer would still work for
+  -- that path, but binding both keeps <CR>/D consistent with every other
+  -- action key above, which are bound on the list buffer regardless of
+  -- where focus happens to be.
   -- Row 1 is the logs table's header (see dashboard_views.lua's logs
   -- view), so it's offset by one from `session.filtered_logs`.
   ---@param opts table { open = boolean, close = boolean }

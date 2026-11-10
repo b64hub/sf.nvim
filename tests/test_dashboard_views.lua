@@ -619,6 +619,23 @@ test_set["render_winbar: contains all tab labels"] = function()
   eq(child.lua_get([[_G.all_labels_present]]), true)
 end
 
+test_set["render_winbar: labels are prefixed with their bracketed 1-based index"] = function()
+  child.lua([[
+    local dashboard_views = require("sf.ui.dashboard_views")
+    _G.winbar = dashboard_views.render_winbar("details")
+    _G.tabs = dashboard_views.tab_views()
+    _G.all_bracketed_present = true
+    for tab_idx, view in ipairs(_G.tabs) do
+      local expected = string.format("[%d] %s", tab_idx, view.label)
+      if not string.find(_G.winbar, expected, 1, true) then
+        _G.all_bracketed_present = false
+      end
+    end
+  ]])
+
+  eq(child.lua_get([[_G.all_bracketed_present]]), true)
+end
+
 test_set["render_winbar: indices are 1..#tab_views in order"] = function()
   child.lua([[
     local dashboard_views = require("sf.ui.dashboard_views")
