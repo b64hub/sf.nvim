@@ -117,6 +117,28 @@ function Org.refresh_sandbox(record, on_done)
   helpers.refresh_sandbox(record, on_done)
 end
 
+--- Create a new scratch org under the default Dev Hub. The caller is
+--- responsible for any confirmation UX -- this prompts for the
+--- definition file (when ambiguous) and alias itself, then shells out to
+--- `sf org create scratch` (no direct-API equivalent: the resulting org
+--- is only usable from this plugin once `sf` has written its local
+--- AuthInfo file, which is CLI-internal). See `helpers.create_scratch_org`.
+---@param on_done fun()|nil called once creation succeeds and the org list
+---  has been refreshed
+function Org.create_scratch_org(on_done)
+  helpers.create_scratch_org(on_done)
+end
+
+--- Create a new sandbox under the default Dev Hub (assumed to be the
+--- sandbox's production org, same assumption `refresh_sandbox` makes).
+--- Requested `--async`; the caller resumes it later with `sf org resume
+--- sandbox` once it's ready (sandbox creation takes hours, so this does
+--- not poll). See `helpers.create_sandbox`.
+---@param on_done fun()|nil called once creation has been *requested*
+function Org.create_sandbox(on_done)
+  helpers.create_sandbox(on_done)
+end
+
 --- Clear a sandbox's pending-refresh flag/cache entry. Not called from
 --- anywhere yet -- there's no status polling in place -- but this is the
 --- hook a future "check sandbox refresh status" feature calls once it
@@ -607,6 +629,153 @@ helpers.refresh_sandbox = function(record, on_done)
           end
         end,
         "Requesting sandbox refresh..."
+      )
+    end)
+  end)
+end
+
+--- Resolve which scratch org definition file `sf org create scratch` should
+--- use. Fast path: the sfdx convention `config/project-scratch-def.json`,
+--- used directly without prompting when present. Otherwise falls back to
+--- any `*.json` file under `config/` (deliberately not limited to a
+--- "scratch-def"-named glob -- a definition file can be called anything),
+--- prompting when there's more than one candidate.
+---@param sf_root string absolute project root (trailing slash)
+---@param callback fun(path: string|nil, err: string|nil) called with the
+---  resolved path, or (nil, nil) if the user cancelled the picker, or
+---  (nil, err) if no candidate exists
+helpers.resolve_scratch_def_file = function(sf_root, callback)
+  local conventional = sf_root .. "config/project-scratch-def.json"
+  if util.file_readable(conventional) then
+    return callback(conventional, nil)
+  end
+
+  local candidates = vim.fn.glob(sf_root .. "config/*.json", false, true)
+  if #candidates == 0 then
+    return callback(nil, "No scratch org definition file found in config/.")
+  end
+  if #candidates == 1 then
+    return callback(candidates[1], nil)
+  end
+
+  vim.ui.select(candidates, { prompt = "Scratch org definition file:" }, function(choice)
+    callback(choice, nil)
+  end)
+end
+
+--- See `Org.create_scratch_org`.
+---@param on_done fun()|nil
+helpers.create_scratch_org = function(on_done)
+  if util.is_empty_str(helpers.default_devhub_alias) then
+    return util.show_err("No default Dev Hub configured. Run `sf config set target-dev-hub=<alias>` first.")
+  end
+
+  local ok_root, sf_root = pcall(util.get_sf_root)
+  if not ok_root then
+    return util.show_err("Not in a sfdx project folder.")
+  end
+
+  helpers.resolve_scratch_def_file(sf_root, function(def_file, err)
+    if err then
+      return util.show_err(err)
+    end
+    if not def_file then
+      return -- user cancelled the definition-file picker
+    end
+
+    vim.ui.input({ prompt = "Scratch org alias: " }, function(alias)
+      if util.is_empty_str(alias) then
+        return
+      end
+      -- cmd_builder shells out via a quoted string (CommandBuilder:build,
+      -- used by sf.term for visible-progress tasks) elsewhere in this
+      -- codebase, but this path uses buildAsTable/util.system_call (no
+      -- shell at all, see delete_sandbox/refresh_sandbox above) -- still
+      -- validated here so a bad alias fails fast with a clear message
+      -- instead of a confusing CLI error.
+      if not alias:match("^[%w_.-]+$") then
+        return util.show_err("Alias may only contain letters, digits, '_', '.', and '-'.")
+      end
+
+      local cmd = cmd_builder
+        :new()
+        :cmd("org")
+        :act("create scratch")
+        :addParams("-f", def_file)
+        :addParams("-a", alias)
+        :addParams("-v", helpers.default_devhub_alias)
+        :localOnly()
+        :buildAsTable()
+
+      util.system_call(
+        cmd,
+        "Scratch org '" .. alias .. "' created.",
+        "Failed to create scratch org '" .. alias .. "'.",
+        function()
+          helpers.fetch_org_list(function()
+            require("sf.ui.org_dashboard").refresh_list()
+            if on_done then
+              on_done()
+            end
+          end)
+        end,
+        "Creating scratch org..."
+      )
+    end)
+  end)
+end
+
+--- See `Org.create_sandbox`. Deliberately minimal (name + license only,
+--- no clone-from-source, no definition file): sandbox creation is rare,
+--- takes hours, and consumes a license, so this does not try to mirror
+--- every CLI flag.
+---@param on_done fun()|nil
+helpers.create_sandbox = function(on_done)
+  local devhub = helpers.default_devhub_alias and helpers.find_org_by_alias(helpers.default_devhub_alias)
+  if not devhub then
+    return util.show_err("No default Dev Hub configured. Run `sf config set target-dev-hub=<alias>` first.")
+  end
+
+  vim.ui.input({ prompt = "New sandbox name (max 10 chars): " }, function(name)
+    if util.is_empty_str(name) then
+      return
+    end
+    if not name:match("^%a%w*$") or #name > 10 then
+      return util.show_err("Sandbox name must start with a letter, be alphanumeric, and at most 10 characters.")
+    end
+
+    vim.ui.select({ "Developer", "Developer_Pro", "Partial", "Full" }, {
+      prompt = "Sandbox license type:",
+    }, function(license)
+      if not license then
+        return
+      end
+
+      local cmd = cmd_builder
+        :new()
+        :cmd("org")
+        :act("create sandbox")
+        :addParams("-n", name)
+        :addParams("-l", license)
+        :addParams("--async")
+        :addParams("--no-prompt")
+        :set_org(devhub.alias)
+        :buildAsTable()
+
+      util.system_call(
+        cmd,
+        "Sandbox '" .. name .. "' creation requested. Once ready, run `sf org resume sandbox -n "
+          .. name
+          .. " -o "
+          .. devhub.alias
+          .. "`.",
+        "Failed to create sandbox '" .. name .. "'.",
+        function()
+          if on_done then
+            on_done()
+          end
+        end,
+        "Requesting sandbox creation..."
       )
     end)
   end)
