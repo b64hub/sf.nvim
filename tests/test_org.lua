@@ -1166,6 +1166,208 @@ T["refresh_sandbox"]["happy path: marks the sandbox pending in-memory and on dis
   eq(child.lua_get([[_G._written_data.sandbox1.sandbox_name]]), "dev1")
 end
 
+T["resolve_scratch_def_file"] = new_set({
+  hooks = {
+    pre_case = function()
+      child.lua([[
+        H = M.__test
+        TMP_PROJECT = vim.fn.tempname() .. "/"
+        vim.fn.mkdir(TMP_PROJECT .. "config", "p")
+      ]])
+    end,
+    post_case = function()
+      child.lua([[vim.fn.delete(TMP_PROJECT, "rf")]])
+    end,
+  },
+})
+
+T["resolve_scratch_def_file"]["uses config/project-scratch-def.json directly when present, without prompting"] = function()
+  child.lua([[
+    vim.fn.writefile({ "{}" }, TMP_PROJECT .. "config/project-scratch-def.json")
+    vim.fn.writefile({ "{}" }, TMP_PROJECT .. "config/other-def.json")
+    vim.ui.select = function() error("must not prompt when the conventional file exists") end
+
+    _G._path, _G._err = nil, "unset"
+    H.resolve_scratch_def_file(TMP_PROJECT, function(path, err) _G._path, _G._err = path, err end)
+  ]])
+
+  eq(child.lua_get([[_G._path]]), child.lua_get([[TMP_PROJECT .. "config/project-scratch-def.json"]]))
+  eq(child.lua_get([[_G._err]]), vim.NIL)
+end
+
+T["resolve_scratch_def_file"]["falls back to the only json file under config/ when the convention is absent"] = function()
+  child.lua([[
+    vim.fn.writefile({ "{}" }, TMP_PROJECT .. "config/custom.json")
+
+    _G._path, _G._err = nil, "unset"
+    H.resolve_scratch_def_file(TMP_PROJECT, function(path, err) _G._path, _G._err = path, err end)
+  ]])
+
+  eq(child.lua_get([[_G._path]]), child.lua_get([[TMP_PROJECT .. "config/custom.json"]]))
+  eq(child.lua_get([[_G._err]]), vim.NIL)
+end
+
+T["resolve_scratch_def_file"]["errors when config/ has no json files at all"] = function()
+  child.lua([[
+    _G._path, _G._err = "unset", nil
+    H.resolve_scratch_def_file(TMP_PROJECT, function(path, err) _G._path, _G._err = path, err end)
+  ]])
+
+  eq(child.lua_get([[_G._path]]), vim.NIL)
+  expect.match(child.lua_get([[_G._err]]), "No scratch org definition file")
+end
+
+T["resolve_scratch_def_file"]["prompts among every non-conventional candidate when there's more than one"] = function()
+  child.lua([[
+    vim.fn.writefile({ "{}" }, TMP_PROJECT .. "config/a.json")
+    vim.fn.writefile({ "{}" }, TMP_PROJECT .. "config/b.json")
+
+    _G._prompted_candidates = nil
+    vim.ui.select = function(items, _, cb)
+      _G._prompted_candidates = items
+      cb(items[2])
+    end
+
+    _G._path = nil
+    H.resolve_scratch_def_file(TMP_PROJECT, function(path, _) _G._path = path end)
+  ]])
+
+  eq(child.lua_get([[#_G._prompted_candidates]]), 2)
+  eq(child.lua_get([[_G._path]]), child.lua_get("_G._prompted_candidates[2]"))
+end
+
+T["create_scratch_org"] = new_set({
+  hooks = {
+    pre_case = function()
+      child.lua([[
+        H = M.__test
+        util = require("sf.util")
+        util.show = function() end
+        util.show_err = function(msg) _G._err = msg end
+        _G._err = nil
+        H.default_devhub_alias = "hub1"
+        H.resolve_scratch_def_file = function(_, cb) cb("/proj/config/project-scratch-def.json", nil) end
+        util.get_sf_root = function() return "/proj/" end
+
+        local dashboard_module = require("sf.ui.org_dashboard")
+        _G._original_refresh_list = dashboard_module.refresh_list
+        dashboard_module.refresh_list = function() _G._refresh_list_called = true end
+        _G._refresh_list_called = false
+      ]])
+    end,
+    post_case = function()
+      child.lua([[require("sf.ui.org_dashboard").refresh_list = _G._original_refresh_list]])
+    end,
+  },
+})
+
+T["create_scratch_org"]["errors when no default Dev Hub is configured"] = function()
+  child.lua([[
+    H.default_devhub_alias = nil
+    util.system_call = function() error("must not shell out without a default devhub") end
+    M.create_scratch_org(function() error("on_done must not fire") end)
+  ]])
+
+  expect.match(child.lua_get([[_G._err]]), "No default Dev Hub")
+end
+
+T["create_scratch_org"]["errors on an alias with shell-unsafe characters without shelling out"] = function()
+  child.lua([[
+    util.system_call = function() error("must not shell out with a bad alias") end
+    vim.ui.input = function(_, cb) cb('bad" alias') end
+    M.create_scratch_org(function() error("on_done must not fire") end)
+  ]])
+
+  expect.match(child.lua_get([[_G._err]]), "letters, digits")
+end
+
+T["create_scratch_org"]["happy path: builds the create command and refreshes the org list on success"] = function()
+  child.lua([[
+    vim.ui.input = function(_, cb) cb("my-scratch") end
+
+    _G._captured_cmd = nil
+    util.system_call = function(cmd, _, _, cb)
+      _G._captured_cmd = cmd
+      cb()
+    end
+
+    _G._fetch_called = false
+    H.fetch_org_list = function(on_done)
+      _G._fetch_called = true
+      on_done()
+    end
+
+    _G._on_done_called = false
+    M.create_scratch_org(function() _G._on_done_called = true end)
+  ]])
+
+  eq(
+    child.lua_get([[_G._captured_cmd]]),
+    { "sf", "org", "create", "scratch", "-a", "my-scratch", "-f", "/proj/config/project-scratch-def.json", "-v", "hub1" }
+  )
+  eq(child.lua_get([[_G._fetch_called]]), true)
+  eq(child.lua_get([[_G._refresh_list_called]]), true)
+  eq(child.lua_get([[_G._on_done_called]]), true)
+end
+
+T["create_sandbox"] = new_set({
+  hooks = {
+    pre_case = function()
+      child.lua([[
+        H = M.__test
+        util = require("sf.util")
+        util.show = function() end
+        util.show_err = function(msg) _G._err = msg end
+        _G._err = nil
+        H.orgs = { { alias = "hub1" } }
+        H.default_devhub_alias = "hub1"
+      ]])
+    end,
+  },
+})
+
+T["create_sandbox"]["errors when no default Dev Hub is configured"] = function()
+  child.lua([[
+    H.default_devhub_alias = nil
+    util.system_call = function() error("must not shell out without a default devhub") end
+    M.create_sandbox(function() error("on_done must not fire") end)
+  ]])
+
+  expect.match(child.lua_get([[_G._err]]), "No default Dev Hub")
+end
+
+T["create_sandbox"]["errors on a name longer than 10 characters without shelling out"] = function()
+  child.lua([[
+    util.system_call = function() error("must not shell out with a bad name") end
+    vim.ui.input = function(_, cb) cb("waytoolongname") end
+    M.create_sandbox(function() error("on_done must not fire") end)
+  ]])
+
+  expect.match(child.lua_get([[_G._err]]), "10 characters")
+end
+
+T["create_sandbox"]["happy path: builds the async create command against the default Dev Hub"] = function()
+  child.lua([[
+    vim.ui.input = function(_, cb) cb("dev1") end
+    vim.ui.select = function(_, _, cb) cb("Developer") end
+
+    _G._captured_cmd = nil
+    util.system_call = function(cmd, _, _, cb)
+      _G._captured_cmd = cmd
+      cb()
+    end
+
+    _G._on_done_called = false
+    M.create_sandbox(function() _G._on_done_called = true end)
+  ]])
+
+  eq(
+    child.lua_get([[_G._captured_cmd]]),
+    { "sf", "org", "create", "sandbox", "-l", "Developer", "-n", "dev1", "--async", "--no-prompt", "-o", "hub1" }
+  )
+  eq(child.lua_get([[_G._on_done_called]]), true)
+end
+
 T["mark_sandbox_refresh_pending"] = new_set({
   hooks = {
     pre_case = function()

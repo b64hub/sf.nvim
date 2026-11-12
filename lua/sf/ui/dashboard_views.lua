@@ -542,6 +542,30 @@ local views = {
     end,
   },
   {
+    id = "create_org",
+    key = "C",
+    label = "Create",
+    help = "Create a scratch org or sandbox",
+    -- Not org-scoped (no record needed), but still bound through the
+    -- left pane's generic action-key loop like every other entry here --
+    -- that loop only fires when the cursor sits on a row, which in
+    -- practice is always true once the dashboard is open (it never opens
+    -- with an empty org list, see helpers.with_orgs), so `record` being
+    -- ignored below is harmless.
+    pane = "left",
+    fetch = nil,
+    render = nil,
+    action = function(_, dashboard_api)
+      vim.ui.select({ "Scratch org", "Sandbox" }, { prompt = "Create:" }, function(choice)
+        if choice == "Scratch org" then
+          Org.create_scratch_org(dashboard_api.repaint_list)
+        elseif choice == "Sandbox" then
+          Org.create_sandbox(dashboard_api.repaint_list)
+        end
+      end)
+    end,
+  },
+  {
     id = "refresh_sandbox",
     key = "R",
     label = "Refresh",
