@@ -529,6 +529,35 @@ local views = {
     end,
   },
   {
+    id = "set_local_devhub",
+    key = "H",
+    label = "Hub-L",
+    help = "Set local target Dev Hub",
+    -- Org-scoped action: shown in the left (org list) pane's footer.
+    pane = "left",
+    fetch = nil,
+    render = nil,
+    action = function(record, dashboard_api)
+      Org.set_default_devhub_to(record.alias, false)
+      dashboard_api.repaint_list()
+    end,
+  },
+  {
+    id = "set_global_devhub",
+    key = "V",
+    label = "Hub-G",
+    help = "Set global target Dev Hub",
+    -- Org-scoped action: shown in the left (org list) pane's footer.
+    pane = "left",
+    fetch = nil,
+    render = nil,
+    action = function(record, dashboard_api)
+      Org.set_default_devhub_to(record.alias, true)
+      dashboard_api.repaint_list()
+      vim.notify("Global target devhub set: " .. record.alias, vim.log.levels.INFO)
+    end,
+  },
+  {
     id = "open_org",
     key = "o",
     label = "Open",
