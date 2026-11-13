@@ -83,6 +83,22 @@ function Org.set_target_org_to(alias, global)
   util.set_target_org(alias, record)
 end
 
+--- Set the default Dev Hub for a specific alias (local or global) and
+--- update cached state (helpers.default_devhub_alias), mirroring
+--- Org.set_target_org_to above but for "target-dev-hub" instead of
+--- "target-org". Neither value is ever stored on an org record -- see
+--- org_model.lua's doc comment -- so this just updates the same
+--- in-memory alias Org.get_default_devhub_alias() reads back.
+---@param alias string
+---@param global boolean whether to set globally (~/.sf/config.json) or locally (.sf/config.json)
+function Org.set_default_devhub_to(alias, global)
+  local ok, err = helpers.write_config_key("target-dev-hub", alias, global)
+  if not ok then
+    return util.show_err(string.format("%s - set target devhub failed! %s", alias, err))
+  end
+  helpers.default_devhub_alias = alias
+end
+
 --- Open a specific org (not necessarily the target_org) in the browser.
 ---@param alias string
 function Org.open_org(alias)
@@ -803,14 +819,18 @@ helpers.delete_sandbox = function(record, on_done)
   )
 end
 
---- Write "target-org" into the project-local `.sf/config.json` (or the
---- global `~/.sf/config.json` when `global` is true), merging into whatever
---- is already there. Synchronous file I/O -- same config file `sf config
---- set target-org` itself writes, without paying for a CLI/Node spinup.
----@param alias string
+--- Write a single key into the project-local `.sf/config.json` (or the
+--- global `~/.sf/config.json` when `global` is true), merging into
+--- whatever is already there. Synchronous file I/O -- same config file
+--- `sf config set <key>=<value>` itself writes, without paying for a
+--- CLI/Node spinup. Shared by the target-org and target-dev-hub writes
+--- below -- same file, same merge-and-overwrite semantics, only the key
+--- differs.
+---@param key string
+---@param value string
 ---@param global boolean
 ---@return boolean ok, string|nil err
-helpers.write_target_org_to_config = function(alias, global)
+helpers.write_config_key = function(key, value, global)
   local path
   if global then
     local home = vim.uv.os_homedir()
@@ -840,13 +860,17 @@ helpers.write_target_org_to_config = function(alias, global)
     end
   end
 
-  config["target-org"] = alias
+  config[key] = value
 
   local ok_write = pcall(vim.fn.writefile, { vim.json.encode(config) }, path)
   if not ok_write then
     return false, "could not write " .. path
   end
   return true
+end
+
+helpers.write_target_org_to_config = function(alias, global)
+  return helpers.write_config_key("target-org", alias, global)
 end
 
 helpers.format_org_item = function(record)

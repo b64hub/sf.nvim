@@ -246,6 +246,29 @@ T["write_target_org_to_config"]["merges target-org into the existing global conf
   eq(saved["api-version"], "60.0")
 end
 
+T["write_config_key"] = new_set({
+  hooks = {
+    pre_case = function()
+      child.lua([[H = M.__test]])
+      child.lua([[
+        TMP_HOME = vim.fn.tempname()
+        vim.fn.mkdir(TMP_HOME .. "/.sf", "p")
+        vim.fn.writefile({ vim.json.encode({ ["api-version"] = "60.0" }) }, TMP_HOME .. "/.sf/config.json")
+        vim.uv.os_homedir = function() return TMP_HOME end
+      ]])
+    end,
+  },
+})
+
+T["write_config_key"]["merges target-dev-hub into the existing global config"] = function()
+  child.lua([[OK, ERR = H.write_config_key("target-dev-hub", "my-hub", true)]])
+  eq(child.lua_get([[OK]]), true)
+
+  local saved = child.lua_get([[vim.json.decode(table.concat(vim.fn.readfile(TMP_HOME .. "/.sf/config.json"), "\n"))]])
+  eq(saved["target-dev-hub"], "my-hub")
+  eq(saved["api-version"], "60.0")
+end
+
 T["set_global_target_org"] = new_set()
 
 T["set_global_target_org"]["does not open selector when org list is empty"] = function()
@@ -283,6 +306,37 @@ T["set_target_org_to"] = new_set({
 T["set_target_org_to"]["public wrapper updates util.target_org"] = function()
   child.lua([[M.set_target_org_to("org2", false)]])
   eq(child.lua_get([[util.target_org]]), "org2")
+end
+
+T["set_default_devhub_to"] = new_set({
+  hooks = {
+    pre_case = function()
+      child.lua([[
+        H = M.__test
+        H.write_config_key = function(key, value, global)
+          return true
+        end
+        H.default_devhub_alias = nil
+      ]])
+    end,
+  },
+})
+
+T["set_default_devhub_to"]["updates the cached default devhub alias"] = function()
+  child.lua([[M.set_default_devhub_to("hub2", false)]])
+  eq(child.lua_get([[M.get_default_devhub_alias()]]), "hub2")
+end
+
+T["set_default_devhub_to"]["shows an error and leaves the cached alias untouched on write failure"] = function()
+  child.lua([[
+    util = require("sf.util")
+    _G.err_shown = nil
+    util.show_err = function(msg) _G.err_shown = msg end
+    H.write_config_key = function() return false, "disk full" end
+    M.set_default_devhub_to("hub3", true)
+  ]])
+  eq(child.lua_get([[_G.err_shown ~= nil]]), true)
+  eq(child.lua_get([[M.get_default_devhub_alias() == nil]]), true)
 end
 
 T["open_org"] = new_set({
