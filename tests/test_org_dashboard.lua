@@ -574,7 +574,7 @@ test_set["handle_tab_click: switches view and returns focus to list"] = function
   eq(child.lua_get([[_G.first_line_is_content]]), true)
 end
 
-test_set["g1-g9: jump directly to the tab with that [N] number"] = function()
+test_set["1-9: jump directly to the tab with that [N] number"] = function()
   child.lua([[
     records = {
       { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
@@ -591,7 +591,7 @@ test_set["g1-g9: jump directly to the tab with that [N] number"] = function()
     GLOBAL_target_idx = math.min(3, #tabs)
   ]])
 
-  child.lua([[vim.api.nvim_input("g" .. GLOBAL_target_idx)]])
+  child.lua([[vim.api.nvim_input(tostring(GLOBAL_target_idx))]])
   child.lua([[vim.wait(60, function() return false end, 50)]])
 
   -- The winbar segment for that index should now carry the active (SfTitle)
@@ -612,7 +612,7 @@ test_set["g1-g9: jump directly to the tab with that [N] number"] = function()
   -- Works the same from the view pane too (after <Tab>).
   child.lua([[vim.api.nvim_input("<Tab>")]])
   child.lua([[vim.wait(30, function() return false end, 30)]])
-  child.lua([[vim.api.nvim_input("g1")]])
+  child.lua([[vim.api.nvim_input("1")]])
   child.lua([[vim.wait(60, function() return false end, 50)]])
 
   local back_to_first = child.lua([[
