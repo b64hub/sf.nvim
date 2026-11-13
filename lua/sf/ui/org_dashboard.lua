@@ -650,7 +650,7 @@ function dashboard.open(records, opts)
       add(view_desc.key, view_desc.label)
     end
     add("<Left>/<Right>, h/l", "Cycle tabs")
-    add("g1-g9", "Jump to tab by its [N] number")
+    add("1-9", "Jump to tab by its [N] number")
     add("<Tab>", "Switch focus between list and view pane")
     table.insert(lines, "")
 
@@ -801,11 +801,10 @@ function dashboard.open(records, opts)
   end, { buffer = session.list_buffer, nowait = true })
 
   -- Direct-jump to a tab by its bracketed winbar number ("[1] Details" ->
-  -- g1). Bare digit keys can't be mapped on their own in Normal mode --
-  -- Neovim always swallows 1-9 into a pending count prefix instead of
-  -- firing a mapping -- so this mirrors Vim's own count-prefixed tab
-  -- switching ("2gt") with a g-prefix instead. Bound on both panes, like
-  -- the click handler, so it works regardless of which pane has focus.
+  -- 1). Bare digits, not vim-style counts: these panes don't use
+  -- count-prefixed motions, so reserving 1-9 for tab jumps matches what the
+  -- winbar already displays. Bound on both panes, like the click handler,
+  -- so it works regardless of which pane has focus.
   for tab_number = 1, 9 do
     local jump_to_tab = function()
       local tabs = dashboard_views.tab_views()
@@ -814,8 +813,8 @@ function dashboard.open(records, opts)
         tab_switch_body(tab_view.id)
       end
     end
-    vim.keymap.set("n", "g" .. tab_number, jump_to_tab, { buffer = session.list_buffer, nowait = true })
-    vim.keymap.set("n", "g" .. tab_number, jump_to_tab, { buffer = session.view_buffer, nowait = true })
+    vim.keymap.set("n", tostring(tab_number), jump_to_tab, { buffer = session.list_buffer, nowait = true })
+    vim.keymap.set("n", tostring(tab_number), jump_to_tab, { buffer = session.view_buffer, nowait = true })
   end
 
   -- Factor scroll logic into a helper for reuse with <C-d>/<C-u> and arrow keys
