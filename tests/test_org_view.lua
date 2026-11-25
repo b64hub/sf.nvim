@@ -318,6 +318,22 @@ test_set["fetch_org_display: surfaces error from get_org_display"] = function()
   eq(child.lua_get([[_G._err == "could not parse `sf org display` output"]]), true)
 end
 
+-- paint
+
+test_set["paint: strips embedded newlines so nvim_buf_set_lines never rejects a line"] = function()
+  child.lua([[
+    _G._buf = vim.api.nvim_create_buf(false, true)
+    -- e.g. an upstream error message built from a raw multi-line API
+    -- response body (rest_api.lua's curl_json unparseable-response branch)
+    -- surfaced verbatim as a single "line" -- must not crash paint().
+    org_view.paint(_G._buf, { "Failed to load: line one\nline two\r\nline three" }, { {} })
+    _G._lines = vim.api.nvim_buf_get_lines(_G._buf, 0, -1, false)
+  ]])
+
+  eq(child.lua_get([[#_G._lines]]), 1)
+  eq(child.lua_get([[_G._lines[1] ]]), "Failed to load: line one line two  line three")
+end
+
 test_set["fetch_org_display: does not call vim.system directly"] = function()
   child.lua([[
     local api = require("sf.sub.rest_api")

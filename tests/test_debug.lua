@@ -61,6 +61,14 @@ T["upsert_trace_flag"]["renews (updates) an existing but expired TraceFlag inste
   eq(child.lua_get("_G._update_sobject"), "TraceFlag")
   eq(child.lua_get("_G._update_id"), "existingId")
   eq(child.lua_get("_G._update_fields.DebugLevelId"), "debugLevelId")
+  -- StartDate must be reset to now on renewal: Salesforce caps a TraceFlag
+  -- at 24h from its StartDate, so renewing while StartDate is still the
+  -- old (already >24h gone) value made ExpirationDate updates fail with
+  -- "Trace flags can be active for up to 24 hours..." even for a brand
+  -- new, well-within-24h ExpirationDate.
+  local start_date = child.lua_get("_G._update_fields.StartDate")
+  eq(type(start_date), "string")
+  eq(start_date == "2000-01-01T00:00:00.000+0000", false)
 end
 
 T["upsert_trace_flag"]["renews (updates) an existing still-active TraceFlag too, rather than only expired ones"] = function()

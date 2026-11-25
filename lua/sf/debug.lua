@@ -10,7 +10,12 @@ local Api = require("sf.sub.rest_api")
 local Debug = {}
 local helpers = {}
 
-local DEBUG_LEVEL_NAME = "ReplayDebuggerLevels"
+-- Matches the VS Code Apex Replay Debugger extension's own default
+-- (`DEFAULT_DEBUG_LEVEL_NAME` in salesforcedx-vscode-apex-replay-debugger,
+-- the same name Developer Console has used for decades) so enabling replay
+-- logging from here reuses the org's existing debug level instead of
+-- creating a second, sf.nvim-only one.
+local DEBUG_LEVEL_NAME = "SFDC_DevConsole"
 
 --- @return table
 local function cfg()
@@ -417,8 +422,9 @@ helpers.resolve_target_user = function(session, user, cb)
   end)
 end
 
---- Find the `ReplayDebuggerLevels` DebugLevel (ApexCode=FINEST, Visualforce=FINER),
---- creating it if missing - and bringing it up to those levels if an
+--- Find the `SFDC_DevConsole` DebugLevel (ApexCode=FINEST, Visualforce=FINER) --
+--- the same one VS Code's Apex Replay Debugger and Developer Console use --
+--- creating it if missing, and bringing it up to those levels if an
 --- existing record (e.g. created by an older sf.nvim version, or by hand)
 --- has weaker ones. Without this, a pre-existing but insufficient record is
 --- reused forever: the adapter's `meetsLogLevelRequirements()` check reads
@@ -482,8 +488,15 @@ helpers.upsert_trace_flag = function(session, user_id, debug_level_id, minutes, 
     local existing = records[1]
 
     if existing then
+      -- Reset StartDate to now too, not just ExpirationDate: Salesforce caps
+      -- a TraceFlag at 24h from its StartDate, which stays untouched on a
+      -- bare ExpirationDate update, so renewing a flag whose StartDate is
+      -- already >24h old (e.g. a previously-expired one) gets rejected with
+      -- "Trace flags can be active for up to 24 hours..." even though the
+      -- new window is well within 24h from *now*.
       return Api.update(session, "TraceFlag", existing.Id, {
         DebugLevelId = debug_level_id,
+        StartDate = helpers.iso_utc(0),
         ExpirationDate = helpers.iso_utc(minutes),
       }, cb)
     end
@@ -523,8 +536,8 @@ end
 --- Salesforce enforces a 24h max TraceFlag duration.
 local MAX_TRACE_FLAG_MINUTES = 24 * 60
 
---- Enable Apex replay-ready debug logging: creates (or reuses) a
---- `ReplayDebuggerLevels` DebugLevel and an active TraceFlag, for the current org
+--- Enable Apex replay-ready debug logging: creates (or reuses) the
+--- `SFDC_DevConsole` DebugLevel and an active TraceFlag, for the current org
 --- user by default.
 --- @param opts number|table|nil number = minutes (back-compat shorthand), or
 ---   `{ minutes = number, user = string, alias = string }`. `user` is a

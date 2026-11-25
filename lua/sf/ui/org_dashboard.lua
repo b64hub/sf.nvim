@@ -730,7 +730,11 @@ function dashboard.open(records, opts)
   -- Refresh key: clears cache, bumps generation, re-runs fetch_org_list.
   -- Overlapping fetch-org-list calls now resolve via last-writer-wins in
   -- helpers.store_orgs (Phase 1 fix), so no additional in-flight guard is needed.
-  vim.keymap.set("n", "r", function()
+  -- Bound to both panes (not just list_buffer) so refreshing the active
+  -- view (org status, log list, trace flags, ...) doesn't require
+  -- switching focus back to the org list first -- show_view below already
+  -- repaints whatever view is currently active.
+  local refresh = function()
     rest_api.invalidate_org_display()
     session.cache = {}
     session.generation = session.generation + 1
@@ -741,7 +745,9 @@ function dashboard.open(records, opts)
         show_view(record, session.active_view_id)
       end
     end)
-  end, { buffer = session.list_buffer, nowait = true })
+  end
+  vim.keymap.set("n", "r", refresh, { buffer = session.list_buffer, nowait = true })
+  vim.keymap.set("n", "r", refresh, { buffer = session.view_buffer, nowait = true })
 
   -- Filter key (f) for logs view
   vim.keymap.set("n", "f", function()

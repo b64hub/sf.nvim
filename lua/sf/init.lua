@@ -300,8 +300,9 @@ Sf.refresh_debug_breakpoint_info = Debug.refresh_breakpoint_info
 
 --- Enable Apex replay-ready debug logging (ApexCode=FINEST, Visualforce=FINER)
 --- for the current user by default, for `replay_debugger.trace_flag_hours`
---- (default 1h) or a given duration. Creates/reuses a `ReplayDebuggerLevels`
---- DebugLevel and an active TraceFlag, via the Tooling REST API directly
+--- (default 1h) or a given duration. Creates/reuses the same `SFDC_DevConsole`
+--- DebugLevel the VS Code extension and Developer Console use, and an active
+--- TraceFlag, via the Tooling REST API directly
 --- (one `sf org display` call, then plain `curl` — much faster than the `sf`
 --- CLI's per-invocation startup cost).
 --- Accepts a number of minutes (shorthand), or a table:
