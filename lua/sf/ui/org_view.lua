@@ -210,6 +210,17 @@ end
 ---@param lines string[]
 ---@param line_hls table[]
 function org_view.paint(buf, lines, line_hls)
+  -- `nvim_buf_set_lines` rejects any entry containing a newline (e.g. a
+  -- multi-line API error body surfaced verbatim as a single "line", see
+  -- rest_api.lua's curl_json unparseable-response branch) -- replace with
+  -- spaces here, once, so no view's error/text formatting has to worry
+  -- about it. Same length, so highlight col_start/col_end stay valid.
+  for i, line in ipairs(lines) do
+    if line:find("[\n\r]") then
+      lines[i] = line:gsub("[\n\r]", " ")
+    end
+  end
+
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
