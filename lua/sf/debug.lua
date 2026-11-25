@@ -418,25 +418,39 @@ helpers.resolve_target_user = function(session, user, cb)
 end
 
 --- Find the `ReplayDebuggerLevels` DebugLevel (ApexCode=FINEST, Visualforce=FINER),
---- creating it if missing.
+--- creating it if missing - and bringing it up to those levels if an
+--- existing record (e.g. created by an older sf.nvim version, or by hand)
+--- has weaker ones. Without this, a pre-existing but insufficient record is
+--- reused forever: the adapter's `meetsLogLevelRequirements()` check reads
+--- the log's own header line, which only gets FINEST/FINER because this
+--- DebugLevel produced it in the first place.
 --- @param session table
 --- @param cb fun(debug_level_id: string|nil, err: string|nil)
 helpers.find_or_create_debug_level = function(session, cb)
-  Api.query(session, string.format("SELECT Id FROM DebugLevel WHERE DeveloperName='%s'", DEBUG_LEVEL_NAME), function(records, err)
-    if not records then
-      return cb(nil, err)
-    end
-    if #records > 0 then
-      return cb(records[1].Id, nil)
-    end
+  local required = { ApexCode = "FINEST", Visualforce = "FINER" }
+  Api.query(
+    session,
+    string.format("SELECT Id, ApexCode, Visualforce FROM DebugLevel WHERE DeveloperName='%s'", DEBUG_LEVEL_NAME),
+    function(records, err)
+      if not records then
+        return cb(nil, err)
+      end
+      local existing = records[1]
+      if existing then
+        if existing.ApexCode == required.ApexCode and existing.Visualforce == required.Visualforce then
+          return cb(existing.Id, nil)
+        end
+        return Api.update(session, "DebugLevel", existing.Id, required, function(ok, update_err)
+          cb(ok and existing.Id or nil, update_err)
+        end)
+      end
 
-    Api.create(session, "DebugLevel", {
-      DeveloperName = DEBUG_LEVEL_NAME,
-      MasterLabel = DEBUG_LEVEL_NAME,
-      ApexCode = "FINEST",
-      Visualforce = "FINER",
-    }, cb)
-  end)
+      Api.create(session, "DebugLevel", vim.tbl_extend("force", required, {
+        DeveloperName = DEBUG_LEVEL_NAME,
+        MasterLabel = DEBUG_LEVEL_NAME,
+      }), cb)
+    end
+  )
 end
 
 --- ISO8601 UTC timestamp `minutes` from now (or now, if `minutes` is nil/0).

@@ -99,4 +99,64 @@ T["upsert_trace_flag"]["propagates a query failure without creating or updating"
   eq(child.lua_get("_G._err"), "boom")
 end
 
+T["find_or_create_debug_level"] = new_set()
+
+T["find_or_create_debug_level"]["creates a new DebugLevel when none exists"] = function()
+  child.lua([[
+    Api.query = function(_, _, cb) cb({}, nil) end
+    Api.update = function() error("update should not be called when there is no existing record") end
+    Api.create = function(_, _, fields, cb)
+      _G._create_fields = fields
+      cb("newId", nil)
+    end
+
+    H.find_or_create_debug_level({}, function(id, err)
+      _G._id, _G._err = id, err
+    end)
+  ]])
+
+  eq(child.lua_get("_G._id"), "newId")
+  eq(child.lua_get("_G._create_fields.ApexCode"), "FINEST")
+  eq(child.lua_get("_G._create_fields.Visualforce"), "FINER")
+end
+
+T["find_or_create_debug_level"]["reuses an existing DebugLevel already at the required levels"] = function()
+  child.lua([[
+    Api.query = function(_, _, cb)
+      cb({ { Id = "existingId", ApexCode = "FINEST", Visualforce = "FINER" } }, nil)
+    end
+    Api.update = function() error("update should not be called when levels already match") end
+    Api.create = function() error("create should not be called for an already-existing record") end
+
+    H.find_or_create_debug_level({}, function(id, err)
+      _G._id, _G._err = id, err
+    end)
+  ]])
+
+  eq(child.lua_get("_G._id"), "existingId")
+end
+
+T["find_or_create_debug_level"]["raises an existing but insufficient DebugLevel to the required levels"] = function()
+  child.lua([[
+    Api.query = function(_, _, cb)
+      cb({ { Id = "existingId", ApexCode = "DEBUG", Visualforce = "FINE" } }, nil)
+    end
+    Api.update = function(_, sobject, id, fields, cb)
+      _G._update_sobject, _G._update_id, _G._update_fields = sobject, id, fields
+      cb(true, nil)
+    end
+    Api.create = function() error("create should not be called for an already-existing record") end
+
+    H.find_or_create_debug_level({}, function(id, err)
+      _G._id, _G._err = id, err
+    end)
+  ]])
+
+  eq(child.lua_get("_G._id"), "existingId")
+  eq(child.lua_get("_G._update_sobject"), "DebugLevel")
+  eq(child.lua_get("_G._update_id"), "existingId")
+  eq(child.lua_get("_G._update_fields.ApexCode"), "FINEST")
+  eq(child.lua_get("_G._update_fields.Visualforce"), "FINER")
+end
+
 return T
