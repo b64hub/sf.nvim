@@ -235,6 +235,13 @@ Debug.launch = function(log_path)
   -- The adapter reads `logFileContents` (plain text), not `logFile` - see
   -- docs/replay-debugger-notes.md.
   local contents = table.concat(vim.fn.readfile(log_path), "\n")
+  if contents == "" then
+    -- shortcut: catches a 0-byte log file (failed/partial download) here with
+    -- a clear message, instead of letting the adapter crash on a missing
+    -- `logFileContents` with an opaque `TypeError` stack trace; a genuinely
+    -- empty log is useless to replay either way.
+    return util.show_err("sf.nvim: log file is empty: " .. log_path)
+  end
   local log_file_name = vim.fn.fnamemodify(log_path, ":t")
 
   dap.run({
