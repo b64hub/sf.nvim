@@ -459,6 +459,84 @@ T["parse_log_list"]["parses Operation field from log entries"] = function()
   eq(child.lua_get([[logs[3].operation]]), "")
 end
 
+T["map_apex_log_records"] = new_set()
+
+T["map_apex_log_records"]["maps Tooling API ApexLog records into the flat log record shape"] = function()
+  child.lua([[
+    H = M.__test
+    logs = H.map_apex_log_records({
+      {
+        Id = "log1",
+        LogUser = { Name = "alice" },
+        StartTime = "2024-01-01T10:00:00.000+0000",
+        LogLength = 1024,
+        Status = "Success",
+        Operation = "/aura",
+      },
+      { Id = "log2", StartTime = "2024-01-02T11:00:00.000+0000" },
+    })
+  ]])
+
+  eq(child.lua_get([[#logs]]), 2)
+  eq(child.lua_get([[logs[1].id]]), "log1")
+  eq(child.lua_get([[logs[1].user]]), "alice")
+  eq(child.lua_get([[logs[1].size]]), 1024)
+  eq(child.lua_get([[logs[1].operation]]), "/aura")
+  -- Record missing LogUser/LogLength/Status/Operation falls back cleanly
+  eq(child.lua_get([[logs[2].user]]), "")
+  eq(child.lua_get([[logs[2].size]]), 0)
+  eq(child.lua_get([[logs[2].status]]), "")
+end
+
+T["list_org_logs"] = new_set()
+
+T["list_org_logs"]["queries ApexLog via the Tooling API for the given alias"] = function()
+  child.lua([[
+    rest_api = require("sf.sub.rest_api")
+
+    _G._session_alias = nil
+    rest_api.get_session = function(alias, cb)
+      _G._session_alias = alias
+      cb({ token = "tok", url = "https://x", api_version = "60.0" }, nil)
+    end
+
+    _G._soql = nil
+    rest_api.query = function(_, soql, cb)
+      _G._soql = soql
+      cb({ { Id = "log1", LogUser = { Name = "alice" }, StartTime = "2024-01-01T10:00:00.000+0000" } }, nil)
+    end
+
+    _G._logs, _G._err = nil, "unset"
+    M.list_org_logs("myorg", function(logs, err)
+      _G._logs, _G._err = logs, err
+    end)
+  ]])
+
+  eq(child.lua_get([[_G._session_alias]]), "myorg")
+  expect.match(child.lua_get([[_G._soql]]), "FROM ApexLog")
+  eq(child.lua_get([[_G._err]]), vim.NIL)
+  eq(child.lua_get([[#_G._logs]]), 1)
+  eq(child.lua_get([[_G._logs[1].id]]), "log1")
+end
+
+T["list_org_logs"]["calls back with nil + error when the session can't be resolved"] = function()
+  child.lua([[
+    rest_api = require("sf.sub.rest_api")
+    rest_api.get_session = function(_, cb)
+      cb(nil, "not authed")
+    end
+    rest_api.query = function() error("must not be called without a session") end
+
+    _G._logs, _G._err = "unset", nil
+    M.list_org_logs("myorg", function(logs, err)
+      _G._logs, _G._err = logs, err
+    end)
+  ]])
+
+  eq(child.lua_get([[_G._logs]]), vim.NIL)
+  eq(child.lua_get([[_G._err]]), "not authed")
+end
+
 T["open_dashboard"] = new_set()
 
 T["open_dashboard"]["fetches the org list first, then opens once orgs are populated"] = function()

@@ -727,20 +727,33 @@ function dashboard.open(records, opts)
   vim.keymap.set("n", "?", toggle_help, { buffer = session.list_buffer, nowait = true })
   vim.keymap.set("n", "?", toggle_help, { buffer = session.view_buffer, nowait = true })
 
-  -- Refresh key: clears cache, bumps generation, re-runs fetch_org_list.
-  -- Overlapping fetch-org-list calls now resolve via last-writer-wins in
-  -- helpers.store_orgs (Phase 1 fix), so no additional in-flight guard is needed.
-  -- Bound to both panes (not just list_buffer) so refreshing the active
-  -- view (org status, log list, trace flags, ...) doesn't require
-  -- switching focus back to the org list first -- show_view below already
-  -- repaints whatever view is currently active.
+  -- Refresh key: which pane it targets depends on where focus actually is,
+  -- not just which buffer the keymap is bound to (bound to both so either
+  -- pane can be refreshed without switching focus to the other first).
+  -- Focus on the view pane -> re-fetch only that view's data (org status,
+  -- log list, trace flags, ...): a full `sf org list` round trip bought
+  -- nothing there and was what made refreshing e.g. the Logs tab slow and
+  -- flaky. Focus on the list pane -> refresh the org list itself, same as
+  -- before (clears the whole cache, bumps generation, re-runs
+  -- fetch_org_list; overlapping fetch-org-list calls resolve via
+  -- last-writer-wins in helpers.store_orgs).
   local refresh = function()
+    local record = current_record()
+
+    if vim.api.nvim_get_current_win() == session.view_window then
+      if record then
+        session.cache[record.alias .. ":" .. session.active_view_id] = nil
+        show_view(record, session.active_view_id)
+      end
+      return
+    end
+
     rest_api.invalidate_org_display()
     session.cache = {}
     session.generation = session.generation + 1
     Org.fetch_org_list(function()
       repaint_list()
-      local record = current_record()
+      record = current_record()
       if record then
         show_view(record, session.active_view_id)
       end
