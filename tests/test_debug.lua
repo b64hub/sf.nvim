@@ -167,4 +167,49 @@ T["find_or_create_debug_level"]["raises an existing but insufficient DebugLevel 
   eq(child.lua_get("_G._update_fields.Visualforce"), "FINER")
 end
 
+T["resolve_log_file"] = new_set()
+
+T["resolve_log_file"]["passes a config through unchanged when logFileContents is already set"] = function()
+  child.lua([[
+    _G._resolved, _G._err = H.resolve_log_file({ logFileContents = "abc" })
+  ]])
+
+  eq(child.lua_get("_G._err"), vim.NIL)
+  eq(child.lua_get("_G._resolved.logFileContents"), "abc")
+end
+
+T["resolve_log_file"]["reads a `logFile` path into logFileContents/logFilePath/logFileName"] = function()
+  child.lua([[
+    local path = vim.fn.tempname() .. ".log"
+    vim.fn.writefile({ "line one", "line two" }, path)
+    _G._resolved, _G._err = H.resolve_log_file({ logFile = path })
+    _G._path = path
+  ]])
+
+  eq(child.lua_get("_G._err"), vim.NIL)
+  eq(child.lua_get("_G._resolved.logFileContents"), "line one\nline two")
+  eq(child.lua_get("_G._resolved.logFilePath"), child.lua_get("_G._path"))
+  eq(child.lua_get("_G._resolved.logFile"), vim.NIL)
+end
+
+T["resolve_log_file"]["errors on an empty log file instead of letting the adapter crash"] = function()
+  child.lua([[
+    local path = vim.fn.tempname() .. ".log"
+    vim.fn.writefile({}, path)
+    _G._resolved, _G._err = H.resolve_log_file({ logFile = path })
+  ]])
+
+  eq(child.lua_get("_G._resolved"), vim.NIL)
+  eq(child.lua_get("_G._err") ~= vim.NIL, true)
+end
+
+T["resolve_log_file"]["errors when neither logFileContents nor logFile is set"] = function()
+  child.lua([[
+    _G._resolved, _G._err = H.resolve_log_file({})
+  ]])
+
+  eq(child.lua_get("_G._resolved"), vim.NIL)
+  eq(child.lua_get("_G._err") ~= vim.NIL, true)
+end
+
 return T
