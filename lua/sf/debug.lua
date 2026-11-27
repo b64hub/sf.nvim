@@ -172,6 +172,40 @@ end
 --- @return string|nil
 Debug.resolve_adapter_path = helpers.resolve_adapter_path
 
+--- Populate `logFileContents`/`logFilePath`/`logFileName` from a `logFile`
+--- path, the way VS Code's own extension host does before spawning the
+--- adapter (see docs/replay-debugger-notes.md) - needed because the adapter
+--- itself never reads a log file, only `e.logFileContents`. `Debug.launch`
+--- already sets `logFileContents` directly, so this is a no-op for it; it's
+--- what makes a launch config built elsewhere (a `.vscode/launch.json`
+--- loaded via `dap.ext.vscode`, or a hand-written `dap.configurations.apex`
+--- entry) work too, instead of crashing the adapter with an opaque
+--- `TypeError: Cannot read properties of undefined (reading 'length')`.
+--- @param config table
+--- @return table|nil config, string|nil err
+helpers.resolve_log_file = function(config)
+  if config.logFileContents then
+    return config, nil
+  end
+  if util.is_empty_str(config.logFile) then
+    return nil, "apex-replay launch config has neither `logFileContents` nor `logFile`"
+  end
+  if not util.file_readable(config.logFile) then
+    return nil, "log file not readable: " .. config.logFile
+  end
+  local contents = table.concat(vim.fn.readfile(config.logFile), "\n")
+  if contents == "" then
+    return nil, "log file is empty: " .. config.logFile
+  end
+
+  local resolved = vim.deepcopy(config)
+  resolved.logFileContents = contents
+  resolved.logFilePath = vim.fn.fnamemodify(config.logFile, ":p")
+  resolved.logFileName = vim.fn.fnamemodify(config.logFile, ":t")
+  resolved.logFile = nil
+  return resolved, nil
+end
+
 --- Register the "apex-replay" adapter with nvim-dap. Safe to call even when
 --- nvim-dap isn't installed.
 Debug.setup_dap = function()
@@ -196,6 +230,12 @@ Debug.setup_dap = function()
       command = cfg().node_path,
       args = { adapter_path },
       enrich_config = function(config, on_config)
+        local resolved, log_err = helpers.resolve_log_file(config)
+        if not resolved then
+          return util.show_err("sf.nvim: " .. log_err)
+        end
+        config = resolved
+
         if config.lineBreakpointInfo then
           return on_config(config)
         end

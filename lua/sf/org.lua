@@ -173,22 +173,24 @@ end
 
 --- List logs from an org (identified by alias) and call the callback with the parsed list.
 --- Does not use fzf-lua; suitable for use by the dashboard's logs view.
+--- Tooling API `ApexLog` query directly, instead of shelling out to `sf
+--- apex list log` -- one HTTP call instead of a whole CLI/Node startup,
+--- which is what made the dashboard's Logs tab flaky/slow to refresh.
 ---@param alias string the org alias to list logs from
----@param callback fun(logs: table[], err: string|nil) called with parsed logs array or error
+---@param callback fun(logs: table[]|nil, err: string|nil) called with parsed logs array, or nil + error
 function Org.list_org_logs(alias, callback)
-  local cmd_tbl = cmd_builder:new()
-      :cmd("apex")
-      :act("list")
-      :subact("log")
-      :addParams("--json")
-      :set_org(alias)
-      :buildAsTable()
-  -- Silent: the dashboard already shows its own inline spinner/"Loading..."
-  -- state while this is in flight (org_dashboard.lua's paint_view), so a
-  -- second top-right progress box here is redundant.
-  util.silent_system_call(cmd_tbl, nil, "Failed to list logs from org", function(obj)
-    local logs, err = helpers.parse_log_list(obj.stdout)
-    callback(logs, err)
+  local rest_api = require("sf.sub.rest_api")
+  rest_api.get_session(alias, function(session, session_err)
+    if not session then
+      return callback(nil, session_err or "could not get session")
+    end
+    local soql = "SELECT Id, LogUser.Name, StartTime, LogLength, Status, Operation FROM ApexLog ORDER BY StartTime DESC"
+    rest_api.query(session, soql, function(records, query_err)
+      if not records then
+        return callback(nil, query_err)
+      end
+      callback(helpers.map_apex_log_records(records), nil)
+    end)
   end)
 end
 
@@ -309,6 +311,30 @@ helpers.parse_log_list = function(stdout_lines)
   end
 
   return logs, nil
+end
+
+--- Map Tooling API `ApexLog` query records (`SELECT Id, LogUser.Name,
+--- StartTime, LogLength, Status, Operation FROM ApexLog`) into the same flat
+--- log record shape `helpers.parse_log_list` produces from the CLI's JSON,
+--- so `Org.list_org_logs` (dashboard, Tooling API) and `helpers.pick_org_log`
+--- (fzf, still CLI-based) stay interchangeable for every caller downstream.
+---@param records table[] Tooling API query records
+---@return table[] logs array of { id, user, start_time, size, status, operation, raw }
+helpers.map_apex_log_records = function(records)
+  local logs = {}
+  for _, log_entry in ipairs(records) do
+    local user_name = log_entry.LogUser and log_entry.LogUser.Name or ""
+    table.insert(logs, {
+      id = log_entry.Id,
+      user = user_name,
+      start_time = log_entry.StartTime or "",
+      size = log_entry.LogLength or 0,
+      status = log_entry.Status or "",
+      operation = log_entry.Operation or "",
+      raw = log_entry,
+    })
+  end
+  return logs
 end
 
 ---@param dir string

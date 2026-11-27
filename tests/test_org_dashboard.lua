@@ -406,6 +406,68 @@ test_set["refresh key 'r': re-fetches org list and invalidates the active view's
   eq(child.lua_get([[_G.fake_view_fetch_count]]), 2)
 end
 
+test_set["refresh key 'r' with focus on the view pane: refreshes only the active view, not the org list"] = function()
+  child.lua([[
+    local util = require("sf.util")
+    util.is_sf_cmd_installed = function() end
+
+    _G.jobstart_count = 0
+    vim.fn.jobstart = function(_, opts)
+      _G.jobstart_count = _G.jobstart_count + 1
+      if opts.on_stdout then
+        opts.on_stdout(nil, { '{"result":{"nonScratchOrgs":[{"alias":"org1","username":"user1","isScratch":false,"isSandbox":false,"isDefaultUsername":true,"isDefaultDevHubUsername":false}],"scratchOrgs":[]}}' })
+      end
+      if opts.on_exit then
+        opts.on_exit()
+      end
+      return 1
+    end
+
+    records = {
+      { alias = "org1", username = "user1", org_type = "production", expiration_date = nil },
+    }
+
+    _G.fake_view_fetch_count = 0
+    table.insert(dashboard_views, {
+      id = "cache_probe_2",
+      key = "y",
+      label = "Cache Probe 2",
+      fetch = function(record, callback)
+        _G.fake_view_fetch_count = _G.fake_view_fetch_count + 1
+        vim.schedule(function()
+          callback({ probe = record.alias }, nil)
+        end)
+      end,
+      render = function(_, data)
+        return { "probe: " .. data.probe }, { {} }
+      end,
+      action = nil,
+    })
+
+    dashboard.open(records, { prompt = "Orgs" })
+  ]])
+
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  -- Switch to the fake view: first fetch, gets cached.
+  child.lua([[vim.api.nvim_input("y")]])
+  child.lua([[vim.wait(50, function() return false end, 50)]])
+  eq(child.lua_get([[_G.fake_view_fetch_count]]), 1)
+
+  -- Move focus into the view pane (<Tab>), then press 'r'.
+  child.lua([[vim.api.nvim_input("<Tab>")]])
+  child.lua([[vim.wait(30, function() return false end, 30)]])
+
+  local jobstart_count_before_refresh = child.lua_get([[_G.jobstart_count]])
+  child.lua([[vim.api.nvim_input("r")]])
+  child.lua([[vim.wait(60, function() return false end, 50)]])
+
+  -- Org list was NOT re-fetched (no new jobstart call)...
+  eq(child.lua_get([[_G.jobstart_count]]), jobstart_count_before_refresh)
+  -- ...but the active view's cache was invalidated and re-fetched.
+  eq(child.lua_get([[_G.fake_view_fetch_count]]), 2)
+end
+
 test_set["action entry: dashboard_api.repaint_list invoked after action"] = function()
   child.lua([[
     helpers = require("sf.org").__test
